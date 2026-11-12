@@ -50,7 +50,7 @@ static juce::AudioBuffer<float> render (facet::Params p, bool synth, const juce:
             }
         }
         tr.ppq = (pos / sr) * tr.bpm / 60.0;
-        e.process (io, synth ? 0 : 2, midi, tr, p);
+        e.process (io, synth ? 0 : 2, facet::Engine::AuxOutputs {}, midi, tr, p);
         for (int c = 0; c < 2; ++c) out.copyFrom (c, pos, io, c, 0, n);
     }
     return out;
@@ -127,6 +127,57 @@ int main()
     const auto d = render (s, true, src, sr, 6.0, true);
     ok &= check (d, "instrument (MIDI notes)");
     write (d, sr, "facet_instrument.wav");
+
+    // 4) four heads, each on its own output; head 2 and 4 unlinked with their own settings
+    {
+        facet::Params h = q;
+        for (int k = 0; k < facet::kNumHeads; ++k) { h.heads[(size_t) k].on = true; h.heads[(size_t) k].bus = k; }
+        h.heads[1].link = false; h.heads[1].sizeMs = 40.0f; h.heads[1].density = 60.0f; h.heads[1].grainDir = facet::DirForward;
+        h.heads[3].link = false; h.heads[3].sizeMs = 600.0f; h.heads[3].density = 4.0f; h.heads[3].scanMode = facet::ScanPingPong;
+        h.heads[2].pitch = -12.0f; h.heads[2].pan = -0.5f;
+
+        auto renderMulti = [&] (std::array<juce::AudioBuffer<float>, 4>& outs)
+        {
+            facet::Engine e;
+            const int block = 256, total = (int) (sr * 4.0);
+            e.prepare (sr, block, false);
+            e.loadFile (src, sr);
+            for (auto& o : outs) { o.setSize (2, total); o.clear(); }
+            juce::AudioBuffer<float> io (2, block), auxBuf (6, block);
+            facet::Transport tr; tr.playing = true; tr.hasPpq = true;
+            for (int pos = 0; pos < total; pos += block)
+            {
+                io.clear();
+                facet::Engine::AuxOutputs aux;
+                for (int b = 0; b < 3; ++b) aux[(size_t) b] = { auxBuf.getWritePointer (2 * b), auxBuf.getWritePointer (2 * b + 1) };
+                tr.ppq = (pos / sr) * 2.0;
+                e.process (io, 2, aux, juce::MidiBuffer(), tr, h);
+                for (int c = 0; c < 2; ++c)
+                {
+                    outs[0].copyFrom (c, pos, io, c, 0, block);
+                    for (int b = 0; b < 3; ++b) outs[(size_t) b + 1].copyFrom (c, pos, auxBuf, 2 * b + c, 0, block);
+                }
+            }
+        };
+        std::array<juce::AudioBuffer<float>, 4> m1, m2;
+        renderMulti (m1);
+        renderMulti (m2);
+        for (int b = 0; b < 4; ++b)
+        {
+            ok &= check (m1[(size_t) b], ("multi-out bus " + juce::String (b + 1)).toRawUTF8());
+            write (m1[(size_t) b], sr, "facet_head" + juce::String (b + 1) + ".wav");
+        }
+        bool same = true;
+        for (int b = 0; b < 4 && same; ++b)
+            for (int i = 0; i < m1[0].getNumSamples(); ++i)
+                if (m1[(size_t) b].getSample (0, i) != m2[(size_t) b].getSample (0, i)) { same = false; break; }
+        bool differ = false;
+        for (int i = 0; i < m1[0].getNumSamples() && ! differ; ++i)
+            if (std::abs (m1[1].getSample (0, i) - m1[3].getSample (0, i)) > 1.0e-3f) differ = true;
+        std::printf ("%-28s %s\n", "multi-out deterministic", same ? "OK" : "FAIL");
+        std::printf ("%-28s %s\n", "heads sound different", differ ? "OK" : "FAIL");
+        ok &= same && differ;
+    }
 
     write (src, sr, "facet_source.wav");
     std::printf ("\n%s\n", ok ? "ALL TESTS PASSED" : "SOME TESTS FAILED");

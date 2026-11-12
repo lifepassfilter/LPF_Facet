@@ -65,7 +65,7 @@ protected:
 class Knob : public Control, private juce::Timer
 {
 public:
-    Knob (FacetProcessor&, const juce::String& paramID, const juce::String& label, const juce::String& a11y = {});
+    Knob (FacetProcessor&, const juce::String& paramID, const juce::String& label, const juce::String& a11y = {}, bool compact = false);
     void resized() override;
     void paint (juce::Graphics&) override;
 private:
@@ -85,8 +85,19 @@ private:
     FacetProcessor& proc;
     S slider;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> att;
-    bool learning = false;
+    bool learning = false, compact = false;
     juce::String lastMapping;
+};
+
+// A labelled push button inside a section grid (Edit, Copy main…)
+class Action : public Control
+{
+public:
+    Action (const juce::String& id, const juce::String& label, const juce::String& buttonText,
+            const juce::String& a11y, const juce::String& description);
+    void resized() override;
+    void paint (juce::Graphics&) override;
+    Focusable<juce::TextButton> button;
 };
 
 class Choice : public Control
@@ -139,12 +150,14 @@ public:
         addAndMakeVisible (c);
         return *c;
     }
+    void setNote (const juce::String& n) { if (n != note) { note = n; repaint(); } }
+    void setTitleText (const juce::String& t) { title = t; setTitle (t); repaint(); }
     int preferredWidth() const  { return cols * cw + 20; }
     int preferredHeight() const { return ((int) cells.size() + cols - 1) / cols * ch + 38; }
     void paint (juce::Graphics&) override;
     void resized() override;
 private:
-    juce::String number, title;
+    juce::String number, title, note;
     int cols, cw, ch;
     std::vector<std::unique_ptr<juce::Component>> cells;
 };
@@ -256,6 +269,8 @@ private:
     void timerCallback() override;
     void displaySettingsChanged() override;
     juce::String statusText() const;
+    void showHeads (bool);
+    void selectHead (int);
 
     FacetProcessor& proc;
     Settings& settings;
@@ -270,9 +285,16 @@ private:
     Section grain  { "01", "GRAIN", 6, 80, 98 };
     Section buffer { "02", "BUFFER / SCAN", 3, 80, 98 };
     Section shiftS { "03", "SHIFT / SLICE", 4, 80, 98 };
-    Section mods   { "04", "MODULATION", 7, 78, 76 };
+    Section mods   { "04", "MODULATION", 7, 78, 70 };
     Section dyn    { "05", "DYNAMICS / OUT", 4, 80, 98 };
     Section inst   { "06", "INSTRUMENT", 3, 80, 98 };
+    Section heads  { "07", "HEADS", 8, 98, 52 };
+    std::array<std::unique_ptr<Section>, facet::kNumHeads> headDetail;
+    std::array<Action*, facet::kNumHeads> editButtons {};
+    juce::TextButton tabMods { "MODULATION & DYNAMICS" }, tabHeads { "HEADS" },
+                     linkAllBtn { "LINK ALL" }, unlinkAllBtn { "UNLINK ALL" };
+    bool headsView = false;
+    int selectedHead = 0;
 
     DisplayPanel displayPanel;
     HelpPanel helpPanel;

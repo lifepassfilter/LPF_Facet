@@ -14,7 +14,9 @@ namespace facet
 
 constexpr int    kMaxGrains        = 96;
 constexpr int    kNumMods          = 3;
-constexpr int    kMaxVoices        = 8;
+constexpr int    kMaxVoices        = 32;    // instrument: up to 8 notes x 4 heads
+constexpr int    kNumHeads         = 4;
+constexpr int    kNumBuses         = 4;     // main + 3 stereo aux outputs
 constexpr double kMaxWindowSeconds = 10.0;
 constexpr double kBufferSeconds    = 18.0;   // window + headroom for long / pitched grains
 constexpr int    kNumPeakBins      = 512;
@@ -47,6 +49,7 @@ inline double divisionBeats (int i)
     static const double d[] = { 4.0, 2.0, 1.0, 0.75, 0.5, 1.0 / 3.0, 0.25, 1.0 / 6.0, 0.125, 0.0625 };
     return d[juce::jlimit (0, 9, i)];
 }
+inline juce::StringArray headOutputNames() { return { "Main 1-2", "Out 3-4", "Out 5-6", "Out 7-8" }; }
 inline juce::StringArray slicePatternNames()
 {
     return { "Straight", "Offbeat", "Onbeat", "Tresillo", "Gallop", "Sparse", "Stutter", "Seeded" };
@@ -75,6 +78,20 @@ struct ModParams
 {
     int   shape = ShapeSine, rateMode = RateHz, division = 4, dest = DestNone;
     float rateHz = 1.0f, depth = 0.0f;
+};
+
+struct HeadParams
+{
+    bool  on = false;
+    float offset = 0.0f;     // added to Position (wraps)
+    float pitch  = 0.0f;     // semitones, added to the global pitch
+    float levelDb = 0.0f;
+    float pan    = 0.0f;
+    int   bus    = 0;        // 0 = main, 1..3 = aux outputs
+    // own grain settings, used when link == false
+    bool  link = true;
+    float sizeMs = 120.0f, density = 12.0f, spray = 0.0f, shape = 1.0f, scanSpeed = 1.0f;
+    int   division = 6, grainDir = DirForward, scanMode = ScanStatic, patternLen = 8, seed = 1;
 };
 
 struct Params
@@ -118,6 +135,11 @@ struct Params
     float attackMs = 5.0f, releaseMs = 300.0f;
 
     std::array<ModParams, kNumMods> mods;
+    std::array<HeadParams, kNumHeads> heads {};
+    Params()
+    {
+        for (int h = 0; h < kNumHeads; ++h) { heads[(size_t) h].on = h == 0; heads[(size_t) h].offset = 0.25f * (float) h; }
+    }
 };
 
 struct Transport
@@ -138,6 +160,8 @@ public:
         for (auto& p : filePeaks) p.store (0.0f);
         for (auto& g : grainView) g.store (-1.0f);
         for (auto& m : modView)   m.store (0.0f);
+        for (auto& h : viewHeadPos) h.store (-1.0f);
+        for (auto& h : grainHead) h.store (0);
     }
 
     //--------------------------------------------------------------------------
@@ -155,10 +179,11 @@ public:
 
         for (auto& g : grains) g.active = false;
         for (auto& v : voices) v = Voice();
-        if (! isSynth) startVoice (0, -1, 1.0f);
 
         for (auto& m : modPhase) m = 0.0;
-        gate = 1.0f; fbL = fbR = 0.0f; compEnv = 0.0f; limGain = 1.0f;
+        gate = 1.0f; fbL = fbR = 0.0f;
+        for (auto& c : compEnv) c = 0.0f;
+        for (auto& l : limGain) l = 1.0f;
         fsPhase = 0.0; for (auto& h : hilbert) h.reset();
         ppq = 0.0; lastSliceStep = -1; wasPlaying = false; lastMode = -1;
 
@@ -177,11 +202,19 @@ public:
     bool hasFile() const { return fileLen.load() > 0; }
 
     //--------------------------------------------------------------------------
-    void process (juce::AudioBuffer<float>& io, int numInputChannels,
+    // aux: stereo pointer pairs for output buses 1..3 (nullptr when the host has them disabled).
+    using AuxOutputs = std::array<std::pair<float*, float*>, kNumBuses - 1>;
+
+    void process (juce::AudioBuffer<float>& io, int numInputChannels, const AuxOutputs& aux,
                   const juce::MidiBuffer& midi, const Transport& tr, const Params& p)
     {
         const juce::SpinLock::ScopedTryLockType sl (bufferLock);
         const int n = io.getNumSamples();
+        for (auto& a : aux)
+        {
+            if (a.first  != nullptr) juce::FloatVectorOperations::clear (a.first, n);
+            if (a.second != nullptr && a.second != a.first) juce::FloatVectorOperations::clear (a.second, n);
+        }
         if (! sl.isLocked() || bufLen == 0) { io.clear(); return; }
 
         const int nch = io.getNumChannels();
@@ -192,6 +225,18 @@ public:
             dry.copyFrom (1, 0, io, juce::jmin (1, nch - 1), 0, n);
         }
         else dry.clear();
+
+        // output buses: 0 = main; a head routed to a missing bus falls back to main
+        std::array<float*, kNumBuses> busL {}, busR {};
+        busL[0] = io.getWritePointer (0);
+        busR[0] = nch > 1 ? io.getWritePointer (1) : nullptr;
+        for (int b = 1; b < kNumBuses; ++b)
+        {
+            busL[(size_t) b] = aux[(size_t) b - 1].first;
+            busR[(size_t) b] = aux[(size_t) b - 1].second;
+            busOk[(size_t) b] = busL[(size_t) b] != nullptr;
+        }
+        busOk[0] = true;
 
         // ---- transport -----------------------------------------------------
         bpm = tr.bpm > 1.0 ? tr.bpm : 120.0;
@@ -211,8 +256,24 @@ public:
             lastMode = p.bufferMode;
         }
 
-        float* outL = io.getWritePointer (0);
-        float* outR = nch > 1 ? io.getWritePointer (1) : nullptr;
+        // effect: voice h is read head h, switched on and off with its parameter
+        if (! isSynth)
+        {
+            for (int h = 0; h < kNumHeads; ++h)
+            {
+                auto& v = voices[(size_t) h];
+                if (p.heads[(size_t) h].on && ! v.active)
+                {
+                    const Voice* ref = nullptr;
+                    for (int o = 0; o < kNumHeads; ++o)
+                        if (voices[(size_t) o].active) { ref = &voices[(size_t) o]; break; }
+                    startVoice (h, -1, 1.0f, h);
+                    if (ref != nullptr) { v.clock = ref->clock; v.lastIndex = ref->lastIndex; v.scanPhase = ref->scanPhase; v.forceTrigger = false; }
+                }
+                else if (! p.heads[(size_t) h].on && v.active) v.active = false;
+            }
+        }
+
         const float* inL = dry.getReadPointer (0);
         const float* inR = dry.getReadPointer (1);
 
@@ -264,7 +325,8 @@ public:
                     v.env += (target - v.env) * (v.releasing ? relCoef : atkCoef);
                     if (v.releasing && v.env < 1.0e-4f) { v.active = false; continue; }
                 }
-                v.clock += cur.clockInc;
+                const auto& hc = hcur[(size_t) v.head];
+                v.clock += hc.clockInc;
                 const int64_t idx = (int64_t) std::floor (v.clock);
                 if (idx != v.lastIndex || v.forceTrigger)
                 {
@@ -273,11 +335,11 @@ public:
                     v.forceTrigger = false;
                     leadVoice = vi;
                 }
-                v.scanPhase += cur.scanInc;
+                v.scanPhase += hc.scanInc;
             }
 
-            // ---- grains ------------------------------------------------------
-            float wetL = 0.0f, wetR = 0.0f;
+            // ---- grains, summed per output bus ---------------------------
+            std::array<float, kNumBuses> wl {}, wr {};
             const Source src = currentSource (p.bufferMode);
             if (src.len > 4)
             {
@@ -291,8 +353,8 @@ public:
                     const float env = window (x, g.taper) * g.gain * vEnv;
                     float sL, sR;
                     readHermite (src, g.pos, sL, sR);
-                    wetL += sL * env * g.gl;
-                    wetR += sR * env * g.gr;
+                    wl[(size_t) g.bus] += sL * env * g.gl;
+                    wr[(size_t) g.bus] += sR * env * g.gr;
 
                     g.pos += g.rate;
                     if (g.pos >= g.wrap) g.pos -= g.wrap;
@@ -301,46 +363,63 @@ public:
                 }
             }
 
-            // ---- frequency shifter (Hilbert, single sideband) --------------
-            if (std::abs (cur.freqShift) > 0.5f)
+            const bool shifting = std::abs (cur.freqShift) > 0.5f;
+            double fc = 1.0, fsn = 0.0;
+            if (shifting)
             {
-                const double c = std::cos (fsPhase * juce::MathConstants<double>::twoPi);
-                const double s = std::sin (fsPhase * juce::MathConstants<double>::twoPi);
-                wetL = hilbert[0].shift (wetL, c, s);
-                wetR = hilbert[1].shift (wetR, c, s);
+                fc  = std::cos (fsPhase * juce::MathConstants<double>::twoPi);
+                fsn = std::sin (fsPhase * juce::MathConstants<double>::twoPi);
                 fsPhase = frac (fsPhase + cur.freqShift / sr);
             }
 
-            wetL *= gate;
-            wetR *= gate;
-
-            // feedback back into the capture buffer (layering / stacking)
-            fbL = std::tanh (wetL * cur.feedback);
-            fbR = std::tanh (wetR * cur.feedback);
-
-            // ---- dynamics: compressor + safety limiter ----------------------
+            float fbSumL = 0.0f, fbSumR = 0.0f;
+            for (int b = 0; b < kNumBuses; ++b)
             {
-                const float pk = juce::jmax (std::abs (wetL), std::abs (wetR));
-                compEnv += (pk - compEnv) * (pk > compEnv ? compAtk : compRel);
-                float gDb = p.compMakeup;
-                const float lvl = juce::Decibels::gainToDecibels (compEnv, -120.0f);
-                if (p.compRatio > 1.0f && lvl > p.compThresh)
-                    gDb -= (lvl - p.compThresh) * (1.0f - 1.0f / p.compRatio);
-                const float g = juce::Decibels::decibelsToGain (gDb);
-                wetL *= g; wetR *= g;
+                if (! busOk[(size_t) b]) continue;
+                float wetL = wl[(size_t) b], wetR = wr[(size_t) b];
+
+                // frequency shifter (Hilbert, single sideband)
+                if (shifting)
+                {
+                    wetL = hilbert[(size_t) (2 * b)].shift (wetL, fc, fsn);
+                    wetR = hilbert[(size_t) (2 * b + 1)].shift (wetR, fc, fsn);
+                }
+                wetL *= gate;
+                wetR *= gate;
+                fbSumL += wetL; fbSumR += wetR;
+
+                // compressor
+                {
+                    auto& ce = compEnv[(size_t) b];
+                    const float pk = juce::jmax (std::abs (wetL), std::abs (wetR));
+                    ce += (pk - ce) * (pk > ce ? compAtk : compRel);
+                    float gDb = p.compMakeup;
+                    const float lvl = juce::Decibels::gainToDecibels (ce, -120.0f);
+                    if (p.compRatio > 1.0f && lvl > p.compThresh)
+                        gDb -= (lvl - p.compThresh) * (1.0f - 1.0f / p.compRatio);
+                    const float g = juce::Decibels::decibelsToGain (gDb);
+                    wetL *= g; wetR *= g;
+                }
+
+                // main gets the dry/wet mix; aux outputs carry the wet heads only
+                float oL = b == 0 ? inL[i] * (1.0f - cur.mix) + wetL * cur.mix : wetL;
+                float oR = b == 0 ? inR[i] * (1.0f - cur.mix) + wetR * cur.mix : wetR;
+                oL *= outGain; oR *= outGain;
+
+                auto& lg = limGain[(size_t) b];
+                const float opk = juce::jmax (std::abs (oL), std::abs (oR));
+                const float lt  = opk > 0.97f ? 0.97f / opk : 1.0f;
+                lg = lt < lg ? lt : lg + (1.0f - lg) * limRel;
+                oL *= lg; oR *= lg;
+
+                busL[(size_t) b][i] = oL;
+                if (busR[(size_t) b] != nullptr && busR[(size_t) b] != busL[(size_t) b]) busR[(size_t) b][i] = oR;
+                else if (busR[(size_t) b] == nullptr && b > 0) busL[(size_t) b][i] = 0.5f * (oL + oR);
             }
 
-            float oL = inL[i] * (1.0f - cur.mix) + wetL * cur.mix;
-            float oR = inR[i] * (1.0f - cur.mix) + wetR * cur.mix;
-            oL *= outGain; oR *= outGain;
-
-            const float opk = juce::jmax (std::abs (oL), std::abs (oR));
-            const float lt  = opk > 0.97f ? 0.97f / opk : 1.0f;
-            limGain = lt < limGain ? lt : limGain + (1.0f - limGain) * limRel;
-            oL *= limGain; oR *= limGain;
-
-            outL[i] = oL;
-            if (outR != nullptr) outR[i] = oR;
+            // feedback back into the capture buffer (layering / stacking)
+            fbL = std::tanh (fbSumL * cur.feedback);
+            fbR = std::tanh (fbSumR * cur.feedback);
 
             ppq += ppqInc;
         }
@@ -359,13 +438,15 @@ public:
     std::atomic<int>   fileLen { 0 };
     std::atomic<float> viewRegionSeconds { 4.0f };
     std::atomic<bool>  viewHostPlaying { false };
+    std::array<std::atomic<float>, kNumHeads>  viewHeadPos;   // region fraction, or -1 when off
+    std::array<std::atomic<int>, kMaxGrains>   grainHead;
 
 private:
     //--------------------------------------------------------------------------
     struct Voice
     {
         bool    active = false, releasing = false, forceTrigger = false;
-        int     note = -1;
+        int     note = -1, head = 0;
         float   velocity = 1.0f, env = 0.0f;
         double  clock = 0.0, scanPhase = 0.0;
         int64_t lastIndex = -1;
@@ -376,7 +457,7 @@ private:
     {
         bool   active = false;
         double pos = 0.0, rate = 1.0;
-        int    age = 0, len = 1, wrap = 1, voice = 0;
+        int    age = 0, len = 1, wrap = 1, voice = 0, bus = 0, head = 0;
         float  gl = 1.0f, gr = 1.0f, gain = 1.0f, taper = 1.0f;
     };
 
@@ -389,6 +470,15 @@ private:
         float  position = 0.5f, overlapNorm = 1.0f;
         double clockInc = 0.0, scanInc = 0.0;
     };
+
+    // per-head values after link / modulation
+    struct HeadCur
+    {
+        float  sizeSec = 0.1f, spray = 0.0f, taper = 1.0f, overlapNorm = 1.0f, scanSpeed = 1.0f;
+        double clockInc = 0.0, scanInc = 0.0, divBeats = 0.25, density = 10.0;
+        int    scanMode = ScanStatic, grainDir = DirForward, patternLen = 8, seed = 1;
+    };
+    std::array<HeadCur, kNumHeads> hcur;
 
     // Two cascades of 2nd-order allpasses giving ~90 degrees of phase difference
     // over most of the audio band (coefficients: O. Niemitalo).
@@ -510,36 +600,38 @@ private:
     }
 
     //--------------------------------------------------------------------------
-    void startVoice (int vi, int note, float vel)
+    void startVoice (int vi, int note, float vel, int head)
     {
         auto& v = voices[(size_t) vi];
         v = Voice();
-        v.active = true; v.note = note; v.velocity = vel;
+        v.active = true; v.note = note; v.velocity = vel; v.head = head;
         v.env = isSynth ? 0.0f : 1.0f;
         v.clock = 0.0; v.lastIndex = -1; v.forceTrigger = true;
     }
 
-    void handleMidi (const juce::MidiMessage& m, const Params&)
+    int findSlot()
+    {
+        for (int i = 0; i < kMaxVoices; ++i) if (! voices[(size_t) i].active) return i;
+        int slot = -1;
+        float lowest = 2.0f;
+        for (int i = 0; i < kMaxVoices; ++i)
+            if (voices[(size_t) i].releasing && voices[(size_t) i].env < lowest) { lowest = voices[(size_t) i].env; slot = i; }
+        if (slot >= 0) return slot;
+        int64_t oldest = -1;
+        for (int i = 0; i < kMaxVoices; ++i)
+            if (voices[(size_t) i].age > oldest) { oldest = voices[(size_t) i].age; slot = i; }
+        return juce::jmax (0, slot);
+    }
+
+    void handleMidi (const juce::MidiMessage& m, const Params& p)
     {
         if (! isSynth) return;
         if (m.isNoteOn())
         {
-            int slot = -1;
-            for (int i = 0; i < kMaxVoices && slot < 0; ++i) if (! voices[(size_t) i].active) slot = i;
-            if (slot < 0)
-            {
-                float lowest = 2.0f;
-                for (int i = 0; i < kMaxVoices; ++i)
-                    if (voices[(size_t) i].releasing && voices[(size_t) i].env < lowest) { lowest = voices[(size_t) i].env; slot = i; }
-            }
-            if (slot < 0)
-            {
-                int64_t oldest = -1;
-                for (int i = 0; i < kMaxVoices; ++i)
-                    if (voices[(size_t) i].age > oldest) { oldest = voices[(size_t) i].age; slot = i; }
-            }
             for (auto& v : voices) ++v.age;
-            startVoice (slot, m.getNoteNumber(), m.getFloatVelocity());
+            for (int h = 0; h < kNumHeads; ++h)   // one voice per active head
+                if (p.heads[(size_t) h].on)
+                    startVoice (findSlot(), m.getNoteNumber(), m.getFloatVelocity(), h);
         }
         else if (m.isNoteOff())
         {
@@ -625,13 +717,44 @@ private:
                                                        : juce::jlimit (0.05, kMaxWindowSeconds, (double) p.windowSec);
         cur.scanInc = scanSpeed / (winSec * sr);
 
+        // per head: main settings when linked, own settings otherwise; modulation applies to both
+        const double sizeMul = std::pow (2.0, 2.0 * ms[DestSize]);
+        for (int h = 0; h < kNumHeads; ++h)
+        {
+            const auto& hp = p.heads[(size_t) h];
+            auto& hc = hcur[(size_t) h];
+            if (hp.link)
+            {
+                hc.sizeSec = cur.sizeSec; hc.spray = cur.spray; hc.taper = cur.taper;
+                hc.overlapNorm = cur.overlapNorm; hc.clockInc = cur.clockInc; hc.scanInc = cur.scanInc;
+                hc.scanSpeed = (float) scanSpeed; hc.divBeats = divB; hc.density = cur.density;
+                hc.scanMode = p.scanMode; hc.grainDir = p.grainDir; hc.patternLen = p.patternLen;
+                hc.seed = p.seed + 7919 * h;      // linked heads still get their own fixed variation
+                continue;
+            }
+            hc.sizeSec  = (float) juce::jlimit (0.003, 4.0, juce::jmax (0.003, hp.sizeMs / 1000.0) * sizeMul);
+            hc.density  = juce::jlimit (0.1, 400.0, (double) hp.density * densMul);
+            hc.spray    = juce::jlimit (0.0f, 1.0f, hp.spray + ms[DestSpray] * 0.5f);
+            hc.taper    = juce::jlimit (0.0f, 1.0f, hp.shape + ms[DestShape] * 0.5f);
+            hc.divBeats = divisionBeats (hp.division);
+            double hInterval;
+            if (p.sync) { hc.clockInc = (bpm / 60.0 / sr) / hc.divBeats * densMul; hInterval = hc.divBeats * 60.0 / bpm / densMul; }
+            else        { hc.clockInc = hc.density / sr;                           hInterval = 1.0 / hc.density; }
+            hc.overlapNorm = (float) (1.0 / std::sqrt (juce::jmax (1.0, (double) hc.sizeSec / hInterval)));
+            hc.scanSpeed = (float) (hp.scanSpeed + ms[DestScanSpeed] * 2.0);
+            hc.scanInc   = hc.scanSpeed / (winSec * sr);
+            hc.scanMode  = hp.scanMode; hc.grainDir = hp.grainDir; hc.patternLen = hp.patternLen; hc.seed = hp.seed;
+        }
+
         // Re-anchor the effect voice to the song position, so every playback
         // from the same spot produces the same grain sequence.
         if (resync && ! isSynth)
+        for (int h = 0; h < kNumHeads; ++h)
         {
-            auto& v = voices[0];
+            auto& v = voices[(size_t) h];
+            const auto& hc = hcur[(size_t) h];
             const double secs = ppq * 60.0 / bpm;
-            v.clock = p.sync ? ppq / divB : secs * cur.density;
+            v.clock = p.sync ? ppq / hc.divBeats : secs * hc.density;
             v.lastIndex = (int64_t) std::floor (v.clock) - 1;
             double anchor = secs;
             if (p.sliceOn && p.sliceReset)
@@ -639,7 +762,7 @@ private:
                 const double sb = divisionBeats (p.sliceDiv);
                 anchor = (ppq - std::floor (ppq / sb) * sb) * 60.0 / bpm;
             }
-            v.scanPhase = anchor * scanSpeed / winSec;
+            v.scanPhase = anchor * hc.scanSpeed / winSec;
         }
 
         atkCoef  = (float) (1.0 - std::exp (-1.0 / (juce::jmax (0.5f, p.attackMs)  * 0.001 * sr)));
@@ -671,18 +794,22 @@ private:
         const Source src = currentSource (p.bufferMode);
         if (rLen < 8.0 || src.len < 8) return;
 
-        const int     patLen = juce::jlimit (1, 64, p.patternLen);
+        const int     hi     = juce::jlimit (0, kNumHeads - 1, v.head);
+        const auto&   hp     = p.heads[(size_t) hi];
+        const auto&   hc     = hcur[(size_t) hi];
+        const int     patLen = juce::jlimit (1, 64, hc.patternLen);
         const int64_t step   = posMod (idx, patLen);
+        const int     hseed  = hc.seed;
 
-        double pos = cur.position + scanOffset (v, p.scanMode)
-                   + (hash01 (step, p.seed, 1) * 2.0f - 1.0f) * cur.spray;
-        if (p.scanMode == ScanOneShot) pos = juce::jlimit (0.0, 1.0, pos);
-        else                            pos = frac (pos);
+        double pos = cur.position + hp.offset + scanOffset (v, hc.scanMode)
+                   + (hash01 (step, hseed, 1) * 2.0f - 1.0f) * hc.spray;
+        if (hc.scanMode == ScanOneShot) pos = juce::jlimit (0.0, 1.0, pos);
+        else                             pos = frac (pos);
 
-        const int len = juce::jmax (16, (int) (cur.sizeSec * sr));
-        float semis = cur.pitch + p.shiftStep * (float) posMod (step, juce::jmax (1, p.shiftSteps));
+        const int len = juce::jmax (16, (int) (hc.sizeSec * sr));
+        float semis = cur.pitch + hp.pitch + p.shiftStep * (float) posMod (step, juce::jmax (1, p.shiftSteps));
         if (isSynth && v.note >= 0) semis += (float) (v.note - p.rootNote);
-        const bool rev = p.grainDir == DirReverse || (p.grainDir == DirAlternate && (step & 1));
+        const bool rev = hc.grainDir == DirReverse || (hc.grainDir == DirAlternate && (step & 1));
         const double speed = std::pow (2.0, semis / 12.0);
 
         // In Capture mode keep grains behind the write head.
@@ -704,7 +831,7 @@ private:
             if (done > best) { best = done; slot = g; }
         }
 
-        float pan = juce::jlimit (-1.0f, 1.0f, p.panSpread * (hash01 (step, p.seed, 2) * 2.0f - 1.0f) + cur.pan);
+        float pan = juce::jlimit (-1.0f, 1.0f, p.panSpread * (hash01 (step, hseed, 2) * 2.0f - 1.0f) + cur.pan + hp.pan);
         const float th = (pan + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
 
         auto& g  = grains[(size_t) slot];
@@ -717,8 +844,11 @@ private:
         g.voice  = vi;
         g.gl     = std::cos (th) * juce::MathConstants<float>::sqrt2;
         g.gr     = std::sin (th) * juce::MathConstants<float>::sqrt2;
-        g.gain   = cur.overlapNorm * (isSynth ? v.velocity : 1.0f);
-        g.taper  = cur.taper;
+        g.gain   = hc.overlapNorm * (isSynth ? v.velocity : 1.0f)
+                 * (hp.levelDb <= -47.9f ? 0.0f : juce::Decibels::decibelsToGain (hp.levelDb));
+        g.taper  = hc.taper;
+        g.head   = v.head;
+        g.bus    = busOk[(size_t) juce::jlimit (0, kNumBuses - 1, hp.bus)] ? juce::jlimit (0, kNumBuses - 1, hp.bus) : 0;
     }
 
     void publishView (const Params& p)
@@ -735,11 +865,22 @@ private:
         {
             const auto& gr = grains[(size_t) g];
             if (! gr.active) { grainView[(size_t) g].store (-1.0f); continue; }
+            grainHead[(size_t) g].store (gr.head);
             double d = gr.pos - rStart;
             if (d < 0.0) d += wrap;
             grainView[(size_t) g].store (d <= rLen ? (float) (d / rLen) : -1.0f);
         }
         viewScanPos.store ((float) frac (cur.position + scanOffset (voices[(size_t) leadVoice], p.scanMode)));
+        for (int h = 0; h < kNumHeads; ++h)
+        {
+            const auto& hp = p.heads[(size_t) h];
+            if (! hp.on) { viewHeadPos[(size_t) h].store (-1.0f); continue; }
+            const Voice* v = &voices[(size_t) leadVoice];
+            for (const auto& o : voices) if (o.active && o.head == h) { v = &o; break; }
+            const int sm = hcur[(size_t) h].scanMode;
+            double hpPos = cur.position + hp.offset + scanOffset (*v, sm);
+            viewHeadPos[(size_t) h].store ((float) (sm == ScanOneShot ? juce::jlimit (0.0, 1.0, hpPos) : frac (hpPos)));
+        }
         viewPosition.store (cur.position);
         viewSize.store (cur.sizeSec);
     }
@@ -761,10 +902,12 @@ private:
     Current cur;
 
     float gate = 1.0f, gateCoef = 0.01f, fbL = 0.0f, fbR = 0.0f;
-    float compEnv = 0.0f, compAtk = 0.01f, compRel = 0.001f, limGain = 1.0f, limRel = 0.001f;
+    std::array<float, kNumBuses> compEnv {}, limGain { 1.0f, 1.0f, 1.0f, 1.0f };
+    std::array<bool, kNumBuses>  busOk { true, false, false, false };
+    float compAtk = 0.01f, compRel = 0.001f, limRel = 0.001f;
     float atkCoef = 0.01f, relCoef = 0.001f;
     double fsPhase = 0.0;
-    std::array<Hilbert, 2> hilbert;
+    std::array<Hilbert, 2 * kNumBuses> hilbert;
 };
 
 } // namespace facet

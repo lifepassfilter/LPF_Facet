@@ -42,6 +42,8 @@ public:
     // ---- used by the editor ----------------------------------------------
     bool loadAudioFile (const juce::File&);
     void startMidiLearn (const juce::String& paramID);
+    void copyMainToHead (int head);          // head 0..3: copies the main grain settings into its own
+    void setAllLinks (bool linked);
     void clearMidiLearn (const juce::String& paramID);
     juce::String midiLearnInfo (const juce::String& paramID) const;
     bool isLearning (const juce::String& paramID) const;

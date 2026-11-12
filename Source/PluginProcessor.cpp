@@ -94,14 +94,43 @@ juce::AudioProcessorValueTreeState::ParameterLayout FacetProcessor::createLayout
         add (new APC (pid (m + "dest"), n + "Destination", modDestNames(), DestNone));
     }
 
+    // read heads: each reads its own spot (Position + offset) and can go to its own output
+    static const float defaultOffsets[] = { 0.0f, 0.25f, 0.5f, 0.75f };
+    for (int h = 1; h <= kNumHeads; ++h)
+    {
+        const juce::String id = "h" + juce::String (h) + "_";
+        const juce::String n  = "Head " + juce::String (h) + " ";
+        add (new APB (pid (id + "on"), n + "On", h == 1));
+        add (new APF (pid (id + "offset"), n + "Offset", NR (0.0f, 1.0f, 0.0001f), defaultOffsets[h - 1]));
+        add (new APF (pid (id + "pitch"), n + "Pitch", NR (-24.0f, 24.0f, 0.01f), 0.0f));
+        add (new APF (pid (id + "level"), n + "Level", skewed (-48.0f, 6.0f, -12.0f, 0.1f), 0.0f));
+        add (new APF (pid (id + "pan"), n + "Pan", NR (-1.0f, 1.0f, 0.001f), 0.0f));
+        add (new APC (pid (id + "out"), n + "Output", headOutputNames(), 0));
+        // own grain settings (used when Link is off)
+        add (new APB (pid (id + "link"), n + "Link", true));
+        add (new APF (pid (id + "size"), n + "Size", skewed (5.0f, 2000.0f, 150.0f, 0.1f), 120.0f));
+        add (new APF (pid (id + "density"), n + "Density", skewed (0.5f, 200.0f, 15.0f, 0.01f), 12.0f));
+        add (new APC (pid (id + "division"), n + "Division", divisionNames(), 6));
+        add (new APF (pid (id + "spray"), n + "Spray", NR (0.0f, 1.0f, 0.001f), 0.0f));
+        add (new APC (pid (id + "dir"), n + "Direction", grainDirNames(), DirForward));
+        add (new APF (pid (id + "shape"), n + "Shape", NR (0.0f, 1.0f, 0.001f), 1.0f));
+        add (new APC (pid (id + "scan"), n + "Scan", scanModeNames(), ScanStatic));
+        add (new APF (pid (id + "scanSpeed"), n + "Scan Speed", skewed (0.0f, 4.0f, 1.0f, 0.001f), 1.0f));
+        add (new API (pid (id + "pattern"), n + "Pattern Length", 1, 64, 8));
+        add (new API (pid (id + "seed"), n + "Seed", 1, 999, h));
+    }
+
     return { p.begin(), p.end() };
 }
 
 //==============================================================================
 FacetProcessor::FacetProcessor()
     : AudioProcessor (BusesProperties()
-                          .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
-                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+                          .withInput  ("Input",    juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Main 1-2", juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Out 3-4",  juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Out 5-6",  juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Out 7-8",  juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "FACET", createLayout())
 {
     formatManager.registerBasicFormats();
@@ -113,6 +142,11 @@ bool FacetProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto out = layouts.getMainOutputChannelSet();
     if (out != juce::AudioChannelSet::stereo() && out != juce::AudioChannelSet::mono()) return false;
+    for (int b = 1; b < layouts.outputBuses.size(); ++b)
+    {
+        const auto aux = layouts.getChannelSet (false, b);
+        if (! aux.isDisabled() && aux != juce::AudioChannelSet::stereo() && aux != juce::AudioChannelSet::mono()) return false;
+    }
     const auto in = layouts.getMainInputChannelSet();
     if (isInstrument && in.isDisabled()) return true;
     return in == juce::AudioChannelSet::stereo() || in == juce::AudioChannelSet::mono();
@@ -143,6 +177,30 @@ void FacetProcessor::readParams (Params& p) const
     p.compAttackMs = f ("compAttack"); p.compReleaseMs = f ("compRelease"); p.compMakeup = f ("compMakeup");
     p.mix = f ("mix"); p.outGainDb = f ("out");
     p.rootNote = i ("root"); p.attackMs = f ("attack"); p.releaseMs = f ("release");
+
+    for (int h = 0; h < kNumHeads; ++h)
+    {
+        const juce::String id = "h" + juce::String (h + 1) + "_";
+        auto& hp = p.heads[(size_t) h];
+        hp.on      = apvts.getRawParameterValue (id + "on")->load() > 0.5f;
+        hp.offset  = apvts.getRawParameterValue (id + "offset")->load();
+        hp.pitch   = apvts.getRawParameterValue (id + "pitch")->load();
+        hp.levelDb = apvts.getRawParameterValue (id + "level")->load();
+        hp.pan     = apvts.getRawParameterValue (id + "pan")->load();
+        hp.bus     = (int) std::lround (apvts.getRawParameterValue (id + "out")->load());
+        auto v = [this, &id] (const char* name) { return apvts.getRawParameterValue (id + name)->load(); };
+        hp.link       = v ("link") > 0.5f;
+        hp.sizeMs     = v ("size");
+        hp.density    = v ("density");
+        hp.division   = (int) std::lround (v ("division"));
+        hp.spray      = v ("spray");
+        hp.grainDir   = (int) std::lround (v ("dir"));
+        hp.shape      = v ("shape");
+        hp.scanMode   = (int) std::lround (v ("scan"));
+        hp.scanSpeed  = v ("scanSpeed");
+        hp.patternLen = (int) std::lround (v ("pattern"));
+        hp.seed       = (int) std::lround (v ("seed"));
+    }
 
     for (int k = 0; k < kNumMods; ++k)
     {
@@ -195,7 +253,16 @@ void FacetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
     }
 
     const int numIn = getMainBusNumInputChannels();
-    engine.process (buffer, numIn, midi, tr, params);
+    auto mainBus = getBusBuffer (buffer, false, 0);
+    Engine::AuxOutputs aux {};
+    for (int b = 1; b < kNumBuses && b < getBusCount (false); ++b)
+    {
+        auto* bus = getBus (false, b);
+        if (bus == nullptr || ! bus->isEnabled() || bus->getNumberOfChannels() == 0) continue;
+        auto bb = getBusBuffer (buffer, false, b);
+        aux[(size_t) b - 1] = { bb.getWritePointer (0), bb.getNumChannels() > 1 ? bb.getWritePointer (1) : bb.getWritePointer (0) };
+    }
+    engine.process (mainBus, numIn, aux, midi, tr, params);
 }
 
 //==============================================================================
@@ -221,6 +288,35 @@ int FacetProcessor::paramIndex (const juce::String& id) const
     if (auto* p = apvts.getParameter (id))
         return p->getParameterIndex();
     return -1;
+}
+
+void FacetProcessor::copyMainToHead (int head)
+{
+    const juce::String id = "h" + juce::String (head + 1) + "_";
+    const std::pair<const char*, const char*> map[] = {
+        { "size", "size" }, { "density", "density" }, { "division", "division" }, { "spray", "spray" },
+        { "direction", "dir" }, { "shape", "shape" }, { "scanMode", "scan" }, { "scanSpeed", "scanSpeed" },
+        { "pattern", "pattern" }, { "seed", "seed" } };
+    for (auto& [from, to] : map)
+    {
+        auto* src = apvts.getParameter (from);
+        auto* dst = apvts.getParameter (id + to);
+        if (src == nullptr || dst == nullptr) continue;
+        dst->beginChangeGesture();
+        dst->setValueNotifyingHost (dst->convertTo0to1 (src->convertFrom0to1 (src->getValue())));
+        dst->endChangeGesture();
+    }
+}
+
+void FacetProcessor::setAllLinks (bool linked)
+{
+    for (int h = 1; h <= kNumHeads; ++h)
+        if (auto* prm = apvts.getParameter ("h" + juce::String (h) + "_link"))
+        {
+            prm->beginChangeGesture();
+            prm->setValueNotifyingHost (linked ? 1.0f : 0.0f);
+            prm->endChangeGesture();
+        }
 }
 
 void FacetProcessor::startMidiLearn (const juce::String& id) { learnIndex.store (paramIndex (id)); }

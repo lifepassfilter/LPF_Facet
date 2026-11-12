@@ -82,6 +82,28 @@ ctest --test-dir build -C Release --output-on-failure
 | **Dynamics / Out** | Compressor on the wet signal (Ratio 1 = off), Mix, Output, and an always-on safety limiter. |
 | **MIDI learn** | Right-click any knob, then move a controller. Mappings are saved with the session. |
 
+## Read heads & multi-output
+
+Up to **4 read heads** play from the same buffer at the same time (the **HEADS** tab).
+
+- Each head reads at **Position + Offset**, so the grain pad moves them together while they keep their spacing.
+- Per head: On, **Link**, Offset, Pitch (added to the main pitch), Level, Pan, **Output**.
+- **Link on** (default): the head follows the main GRAIN and SCAN settings, with its own fixed variation.
+  **Link off**: the head uses its own Size, Density, Division, Spray, Direction, Shape, Scan, Scan speed,
+  Pattern and Seed (press **EDIT** to show them; **COPY MAIN** starts from the current sound).
+  **LINK ALL / UNLINK ALL** switch every head at once.
+- Modulation, Shift, Slice and dynamics apply to every head.
+- The buffer view shows the heads as numbered diamonds and their grains in one lane per head.
+
+**Multi-output.** The plugin has 4 stereo outputs: *Main 1-2*, *Out 3-4*, *Out 5-6*, *Out 7-8*.
+Choose an Output per head. The main output carries the dry/wet mix; the extra outputs carry only the
+wet heads routed to them (each with its own compressor and safety limiter). A head routed to an output
+the host has disabled plays on Main.
+
+In Reaper: set the track to 8 channels (*Route* → *Track channels: 8*), check the plugin's output pins
+(1-8 by default), then send channels 3-4, 5-6 and 7-8 to other tracks (*Route* → *Sends* → audio
+channels 3/4, 5/6, 7/8 → 1/2).
+
 ## Interface & accessibility
 
 Angular "anti-grav HUD" look (original design: chamfered panels, segmented arcs, numbered sections).
@@ -107,4 +129,5 @@ Fonts (SIL Open Font License, see `fonts/licenses`): Atkinson Hyperlegible, Open
 
 - Modulation is computed every 32 samples. Grain parameters are fixed at the moment each grain starts.
 - In Capture mode, grains are kept behind the write head (pitched-up grains get extra margin).
+- In the instrument, each note starts one voice per active head (up to 32 voices).
 - Not built yet: preset browser, modulators with several targets each, per-grain filter, MPE.

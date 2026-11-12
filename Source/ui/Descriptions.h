@@ -1,6 +1,7 @@
 // One plain sentence per control: shown in the hint bar and read by screen readers.
 #pragma once
 #include <juce_core/juce_core.h>
+#include <map>
 
 namespace facetui
 {
@@ -50,12 +51,34 @@ inline juce::String describe (const juce::String& id)
         { "div#",        "Note length of one cycle when the rate mode is Sync." },
         { "depth#",      "How much the modulator moves its target. Negative values move it the other way." },
         { "dest#",       "Which setting this modulator moves." },
+        { "h#on",        "Turns this read head on. Each head reads its own spot in the audio." },
+        { "h#link",      "On: this head follows the main Grain and Scan settings. Off: it uses its own settings (Edit to change them)." },
+        { "h#offset",    "How far this head reads from Position. 0.5 means the other half of the audio." },
+        { "h#pitch",     "Transposes only this head, in semitones, on top of the main Pitch." },
+        { "h#level",     "Volume of this head." },
+        { "h#pan",       "Moves this head left or right." },
+        { "h#out",       "Which output this head goes to. Use Out 3-4, 5-6, 7-8 to record or process heads on separate tracks." },
+        { "h#edit",      "Shows this head's own settings on the right." },
+        { "h#copy",      "Copies the main Grain and Scan settings into this head, so you start from the current sound." },
+        { "h#size",      "Grain length for this head only." },
+        { "h#density",   "Grains per second for this head only, when Sync is off." },
+        { "h#division",  "Note length between grains for this head, when Sync is on." },
+        { "h#spray",     "Scatter of this head's grains around its reading spot." },
+        { "h#dir",       "Plays this head's grains forward, backward, or alternating." },
+        { "h#shape",     "Grain edges for this head: hard to soft." },
+        { "h#scan",      "How this head's read point travels through the audio." },
+        { "h#scanSpeed", "How fast this head's read point travels." },
+        { "h#pattern",   "After this many grains, this head's variations start over." },
+        { "h#seed",      "This head's fixed variation. Same seed, same result." },
         { "pad",         "Grain pad: left and right sets Position, up and down sets grain Size. Arrow keys work too." },
         { "buffer",      "The audio the grains are reading. Triangles are grains playing now, the chevron is the read head." },
     };
     juce::String key = id;
-    if (id.startsWith ("m") && id.containsChar ('_'))
-        key = id.fromFirstOccurrenceOf ("_", false, false) + "#";
+    if (id.length() > 2 && juce::CharacterFunctions::isDigit (id[1]) && id.containsChar ('_'))
+    {
+        const auto suffix = id.fromFirstOccurrenceOf ("_", false, false);
+        key = id.startsWith ("h") ? "h#" + suffix : suffix + "#";
+    }
     auto it = d.find (key);
     return it != d.end() ? it->second : juce::String();
 }

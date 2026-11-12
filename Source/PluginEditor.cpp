@@ -255,11 +255,12 @@ bool Knob::S::keyPressed (const juce::KeyPress& k)
     return true;
 }
 
-Knob::Knob (FacetProcessor& p, const juce::String& paramID, const juce::String& label, const juce::String& a11y)
-    : Control (paramID, label, a11y), proc (p)
+Knob::Knob (FacetProcessor& p, const juce::String& paramID, const juce::String& label, const juce::String& a11y, bool isCompact)
+    : Control (paramID, label, a11y), proc (p), compact (isCompact)
 {
     slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 78, 17);
+    if (compact) slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 50, 16);
+    else         slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 78, 17);
     slider.setWantsKeyboardFocus (true);
     slider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     slider.setTitle (a11yTitle);
@@ -284,7 +285,7 @@ Knob::Knob (FacetProcessor& p, const juce::String& paramID, const juce::String& 
 void Knob::resized()
 {
     auto r = getLocalBounds();
-    r.removeFromTop (19);
+    r.removeFromTop (compact ? 16 : 19);
     slider.setBounds (r.withTrimmedBottom (2));
 }
 
@@ -342,6 +343,34 @@ void Knob::showMenu()
         if (r == 2) safe->proc.clearMidiLearn (safe->id);
         if (r == 3) safe->slider.setValue (safe->slider.getDoubleClickReturnValue(), juce::sendNotificationSync);
     });
+}
+
+//------------------------------------------------------------------------------
+Action::Action (const juce::String& paramID, const juce::String& label, const juce::String& buttonText,
+                const juce::String& a11y, const juce::String& description)
+    : Control (paramID, label, a11y)
+{
+    hint = description;
+    button.setButtonText (buttonText);
+    button.setTitle (a11yTitle);
+    button.setDescription (description);
+    button.setWantsKeyboardFocus (true);
+    button.onFocusChange = [this] (bool f) { focusChanged (f); };
+    addAndMakeVisible (button);
+}
+
+void Action::resized()
+{
+    auto r = getLocalBounds();
+    r.removeFromTop (16);
+    button.setBounds (r.withSizeKeepingCentre (r.getWidth() - 6, 30).withY (r.getY() + juce::jmax (1, (r.getHeight() - 30) / 2 - 4)));
+}
+
+void Action::paint (juce::Graphics& g)
+{
+    g.setColour (themeOf (*this).text);
+    g.setFont (bodyFont (*this, 12.5f, true));
+    g.drawFittedText (labelText, getLocalBounds().removeFromTop (16), juce::Justification::centred, 1, 0.8f);
 }
 
 //------------------------------------------------------------------------------
@@ -448,7 +477,13 @@ void Section::paint (juce::Graphics& g)
     g.setColour (t.text);
     g.setFont (displayFont (*this, 18.0f));
     g.drawText (title, 44, 7, getWidth() - 100, 24, juce::Justification::left);
-    if (t.decor) drawChevrons (g, { r.getRight() - 52.0f, 12.0f, 40.0f, 12.0f }, 3, t.dim);
+    if (note.isNotEmpty())
+    {
+        g.setColour (t.warn);
+        g.setFont (displayFont (*this, 14.0f));
+        g.drawText (note, juce::Rectangle<float> (r.getRight() - 120.0f, 8.0f, 106.0f, 20.0f), juce::Justification::centredRight);
+    }
+    else if (t.decor) drawChevrons (g, { r.getRight() - 52.0f, 12.0f, 40.0f, 12.0f }, 3, t.dim);
 }
 
 void Section::resized()
@@ -557,15 +592,36 @@ void BufferView::paint (juce::Graphics& g)
     const float dashes[] = { 4.0f, 4.0f };
     g.drawDashedLine ({ sx, area.getY() + 8.0f, sx, area.getBottom() }, dashes, 2, 1.5f);
 
-    // grains playing now: triangles
-    g.setColour (t.value);
-    for (auto& gv : e.grainView)
+    // read heads: numbered diamonds at the bottom of the wave area
+    int headsOn = 0;
+    for (auto& hv : e.viewHeadPos) headsOn += hv.load() >= 0.0f ? 1 : 0;
+    g.setFont (displayFont (*this, 13.0f));
+    for (int h = 0; h < facet::kNumHeads; ++h)
     {
-        const float v = gv.load();
+        const float v = e.viewHeadPos[(size_t) h].load();
+        if (v < 0.0f || headsOn < 2) continue;
+        const float x = area.getX() + v * area.getWidth(), y = area.getBottom() - 9.0f;
+        juce::Path d;
+        d.addQuadrilateral (x, y - 9.0f, x + 9.0f, y, x, y + 9.0f, x - 9.0f, y);
+        g.setColour (t.panel2);
+        g.fillPath (d);
+        g.setColour (t.value);
+        g.strokePath (d, juce::PathStrokeType (1.5f));
+        g.setColour (t.text);
+        g.drawText (juce::String (h + 1), juce::Rectangle<float> (x - 8.0f, y - 8.0f, 16.0f, 16.0f), juce::Justification::centred);
+    }
+
+    // grains playing now: triangles, one lane per head when several heads are on
+    g.setColour (t.value);
+    const float laneH = headsOn > 1 ? half * 1.4f / (float) facet::kNumHeads : 0.0f;
+    for (size_t gi = 0; gi < e.grainView.size(); ++gi)
+    {
+        const float v = e.grainView[gi].load();
         if (v < 0.0f) continue;
         const float x = area.getX() + v * area.getWidth();
+        const float y = mid + ((float) e.grainHead[gi].load() - 1.5f) * laneH;
         juce::Path tri;
-        tri.addTriangle (x - 5.0f, mid + 5.0f, x + 5.0f, mid + 5.0f, x, mid - 5.0f);
+        tri.addTriangle (x - 5.0f, y + 5.0f, x + 5.0f, y + 5.0f, x, y - 5.0f);
         g.fillPath (tri);
     }
 }
@@ -687,6 +743,19 @@ void GrainPad::paint (juce::Graphics& g)
     }
     g.setColour (t.mod);
     g.drawRect (juce::Rectangle<float> (10.0f, 10.0f).withCentre (mp), 1.5f);
+
+    // other read heads (2-4): small numbered marks on the same row
+    g.setFont (bodyFont (*this, 11.0f, true));
+    for (int h = 1; h < facet::kNumHeads; ++h)
+    {
+        const float v = proc.engine.viewHeadPos[(size_t) h].load();
+        if (v < 0.0f) continue;
+        const juce::Point<float> hp (v * r.getWidth(), (1.0f - py.getValue()) * r.getHeight());
+        g.setColour (t.value.withAlpha (0.8f));
+        g.drawRect (juce::Rectangle<float> (14.0f, 14.0f).withCentre (hp), 1.5f);
+        g.setColour (t.text);
+        g.drawText (juce::String (h + 1), juce::Rectangle<float> (14.0f, 14.0f).withCentre (hp), juce::Justification::centred);
+    }
 
     // your setting: crosshair + diamond reticle
     const juce::Point<float> up (px.getValue() * r.getWidth(), (1.0f - py.getValue()) * r.getHeight());
@@ -1006,8 +1075,75 @@ Content::Content (FacetProcessor& p, Settings& s)
     inst.add<Knob> (p, "attack", "Attack", "Note attack");
     inst.add<Knob> (p, "release", "Release", "Note release");
 
+    // 07 HEADS: one row per head
+    for (int h = 0; h < facet::kNumHeads; ++h)
+    {
+        const juce::String id = "h" + juce::String (h + 1) + "_";
+        const juce::String n  = "Head " + juce::String (h + 1) + " ";
+        heads.add<Toggle> (p, id + "on", "HEAD " + juce::String (h + 1), n + "on");
+        heads.add<Toggle> (p, id + "link", "Link", n + "link");
+        heads.add<Knob>   (p, id + "offset", "Offset", n + "offset", true);
+        heads.add<Knob>   (p, id + "pitch", "Pitch", n + "pitch", true);
+        heads.add<Knob>   (p, id + "level", "Level", n + "level", true);
+        heads.add<Knob>   (p, id + "pan", "Pan", n + "pan", true);
+        heads.add<Choice> (p, id + "out", "Output", n + "output");
+        auto& edit = heads.add<Action> (id + "edit", "Settings", "EDIT", "Edit head " + juce::String (h + 1) + " settings",
+                                        describe (id + "edit"));
+        edit.button.setClickingTogglesState (false);
+        edit.button.onClick = [this, h] { selectHead (h); };
+        editButtons[(size_t) h] = &edit;
+
+        // 08 detail page for this head (own settings, used when Link is off)
+        auto d = std::make_unique<Section> ("08", "HEAD " + juce::String (h + 1) + " SETTINGS", 4, 80, 70);
+        d->add<Knob>   (p, id + "size", "Size", n + "size");
+        d->add<Knob>   (p, id + "density", "Density", n + "density");
+        d->add<Choice> (p, id + "division", "Division", n + "division");
+        d->add<Knob>   (p, id + "spray", "Spray", n + "spray");
+        d->add<Choice> (p, id + "dir", "Direction", n + "direction");
+        d->add<Knob>   (p, id + "shape", "Shape", n + "shape");
+        d->add<Choice> (p, id + "scan", "Scan", n + "scan");
+        d->add<Knob>   (p, id + "scanSpeed", "Scan speed", n + "scan speed");
+        d->add<Knob>   (p, id + "pattern", "Pattern", n + "pattern");
+        d->add<Knob>   (p, id + "seed", "Seed", n + "seed");
+        auto& copy = d->add<Action> (id + "copy", "Start from", "COPY MAIN", "Copy main settings to head " + juce::String (h + 1),
+                                     describe (id + "copy"));
+        copy.button.onClick = [this, h]
+        {
+            proc.copyMainToHead (h);
+            announce ("Main settings copied to head " + juce::String (h + 1));
+        };
+        main.addChildComponent (*d);
+        headDetail[(size_t) h] = std::move (d);
+    }
+
+    tabMods.setTitle ("Show modulation and dynamics");
+    tabHeads.setTitle ("Show read heads");
+    tabHeads.setDescription ("Up to 4 read heads, each reading its own spot, with its own settings and output.");
+    for (auto* b : { &tabMods, &tabHeads })
+    {
+        b->setRadioGroupId (4242);
+        b->setClickingTogglesState (true);
+        main.addAndMakeVisible (b);
+    }
+    tabMods.setToggleState (true, juce::dontSendNotification);
+    tabMods.onClick  = [this] { showHeads (false); };
+    tabHeads.onClick = [this] { showHeads (true); };
+
+    linkAllBtn.setTitle ("Link all heads");
+    linkAllBtn.setDescription ("All heads follow the main Grain and Scan settings.");
+    unlinkAllBtn.setTitle ("Unlink all heads");
+    unlinkAllBtn.setDescription ("All heads use their own settings.");
+    linkAllBtn.onClick   = [this] { proc.setAllLinks (true);  announce ("All heads linked"); };
+    unlinkAllBtn.onClick = [this] { proc.setAllLinks (false); announce ("All heads unlinked"); };
+    main.addChildComponent (linkAllBtn);
+    main.addChildComponent (unlinkAllBtn);
+    for (auto* b : { &tabMods, &tabHeads, &linkAllBtn, &unlinkAllBtn })
+        b->onStateChange = [this, b] { if (b->isMouseOver()) showHint (b->getTitle(), b->getDescription()); };
+
     for (auto* s2 : { &grain, &buffer, &shiftS, &mods, &dyn }) main.addAndMakeVisible (s2);
+    main.addChildComponent (heads);
     if (FacetProcessor::isInstrument) main.addAndMakeVisible (inst);
+    selectHead (0);
 
     addChildComponent (displayPanel);
     addChildComponent (helpPanel);
@@ -1069,6 +1205,32 @@ void Content::closePanels()
     if (wasOpen) pad.grabKeyboardFocus();
 }
 
+void Content::showHeads (bool show)
+{
+    headsView = show;
+    tabHeads.setToggleState (show, juce::dontSendNotification);
+    tabMods.setToggleState (! show, juce::dontSendNotification);
+    mods.setVisible (! show);
+    dyn.setVisible (! show);
+    inst.setVisible (! show && FacetProcessor::isInstrument);
+    heads.setVisible (show);
+    linkAllBtn.setVisible (show);
+    unlinkAllBtn.setVisible (show);
+    for (int h = 0; h < facet::kNumHeads; ++h)
+        headDetail[(size_t) h]->setVisible (show && h == selectedHead);
+    announce (show ? "Heads" : "Modulation and dynamics");
+}
+
+void Content::selectHead (int h)
+{
+    selectedHead = juce::jlimit (0, facet::kNumHeads - 1, h);
+    for (int i = 0; i < facet::kNumHeads; ++i)
+    {
+        editButtons[(size_t) i]->button.setToggleState (i == selectedHead, juce::dontSendNotification);
+        headDetail[(size_t) i]->setVisible (headsView && i == selectedHead);
+    }
+}
+
 bool Content::keyPressed (const juce::KeyPress& k)
 {
     const auto ch = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
@@ -1103,6 +1265,19 @@ void Content::timerCallback()
     if (lastMode >= 0 && mode != lastMode)
         announce (mode == facet::ModeFreeze ? "Buffer frozen" : mode == facet::ModeCapture ? "Capturing input" : "Playing file");
     lastMode = mode;
+
+    int onCount = 0;
+    for (int h = 0; h < facet::kNumHeads; ++h)
+    {
+        const juce::String id = "h" + juce::String (h + 1) + "_";
+        const bool on     = proc.apvts.getRawParameterValue (id + "on")->load() > 0.5f;
+        const bool linked = proc.apvts.getRawParameterValue (id + "link")->load() > 0.5f;
+        onCount += on ? 1 : 0;
+        auto& d = *headDetail[(size_t) h];
+        d.setNote (linked ? "LINKED" : (on ? "OWN SETTINGS" : "HEAD OFF"));
+        for (auto* c : d.getChildren()) c->setEnabled (! linked || dynamic_cast<Action*> (c) != nullptr);
+    }
+    tabHeads.setButtonText ("HEADS  " + juce::String (onCount) + "/4 ON");
 
     const auto st = statusText();
     if (st != lastStatus) { lastStatus = st; repaint (0, 0, getWidth(), 90); }
@@ -1220,7 +1395,22 @@ void Content::resized()
     rowA.removeFromLeft (10);
     shiftS.setBounds (rowA.removeFromLeft (shiftS.preferredWidth()));
 
-    r.removeFromTop (10);
+    r.removeFromTop (8);
+    auto tabs = r.removeFromTop (30);
+    tabMods.setBounds (tabs.removeFromLeft (230));
+    tabs.removeFromLeft (6);
+    tabHeads.setBounds (tabs.removeFromLeft (170));
+    unlinkAllBtn.setBounds (tabs.removeFromRight (130));
+    tabs.removeFromRight (6);
+    linkAllBtn.setBounds (tabs.removeFromRight (110));
+    r.removeFromTop (6);
+    {
+        auto rowH = r;
+        heads.setBounds (rowH.removeFromLeft (heads.preferredWidth()).withHeight (heads.preferredHeight()));
+        rowH.removeFromLeft (10);
+        for (auto& d : headDetail)
+            d->setBounds (rowH.withWidth (d->preferredWidth()).withHeight (d->preferredHeight()));
+    }
     auto rowB = r;
     mods.setBounds (rowB.removeFromLeft (mods.preferredWidth()).withHeight (mods.preferredHeight()));
     rowB.removeFromLeft (10);
