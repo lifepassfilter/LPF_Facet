@@ -1,0 +1,99 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# a newer push replaces a build still running for the same branch
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS
+          - os: windows-latest
+            name: Windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        shell: bash
+        run: |
+          EXTRA=""
+          if [ "$RUNNER_OS" = "macOS" ]; then EXTRA="-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"; fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DFACET_BUILD_TESTS=ON "$EXTRA"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Package
+        shell: bash
+        run: |
+          set -e
+          OUT=LPF-Facet-${{ matrix.name }}
+          mkdir -p "$OUT"
+          for P in "LPF_Facet:LPF Facet" "LPF_FacetInst:LPF Facet Inst"; do
+            TARGET="${P%%:*}"; NAME="${P#*:}"
+            ART="build/${TARGET}_artefacts/Release"
+            cp -R "$ART/VST3/$NAME.vst3" "$OUT/"
+            if [ -d "$ART/AU/$NAME.component" ]; then cp -R "$ART/AU/$NAME.component" "$OUT/"; fi
+            if [ -d "$ART/Standalone/$NAME.app" ]; then cp -R "$ART/Standalone/$NAME.app" "$OUT/";
+            elif [ -f "$ART/Standalone/$NAME.exe" ]; then cp "$ART/Standalone/$NAME.exe" "$OUT/"; fi
+          done
+          cp README.md "$OUT/"
+          mkdir -p "$OUT/font-licenses" && cp fonts/licenses/*.txt "$OUT/font-licenses/"
+          if [ "$RUNNER_OS" = "Windows" ]; then 7z a "$OUT.zip" "$OUT" > /dev/null; else zip -qry "$OUT.zip" "$OUT"; fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LPF-Facet-${{ matrix.name }}
+          path: LPF-Facet-${{ matrix.name }}.zip
+
+  # One release per version: the tag v<version> (read from CMakeLists.txt) is created here,
+  # so a push to main is enough to publish.
+  release:
+    needs: build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: ver
+        run: |
+          V=$(sed -n 's/^project(LPF_Facet VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Version $V"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: LPF Facet v${{ steps.ver.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body: |
+            LPF Facet (effect) and LPF Facet Inst (instrument) by Life Pass Filter.
+            Windows: VST3 + Standalone. macOS (Apple Silicon + Intel): VST3, AU + Standalone.
+            Unsigned binaries: see "Install" in the README (macOS quarantine, Windows unblock).
+          files: dist/*.zip
