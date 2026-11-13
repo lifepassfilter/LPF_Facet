@@ -4,9 +4,6 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "FacetEngine.h"
 
-#ifndef FACET_IS_SYNTH
- #define FACET_IS_SYNTH 0
-#endif
 
 class FacetProcessor : public juce::AudioProcessor,
                        private juce::Timer
@@ -48,7 +45,6 @@ public:
     juce::String midiLearnInfo (const juce::String& paramID) const;
     bool isLearning (const juce::String& paramID) const;
 
-    static constexpr bool isInstrument = FACET_IS_SYNTH != 0;
 
     juce::AudioProcessorValueTreeState apvts;
     facet::Engine engine;

@@ -26,7 +26,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout FacetProcessor::createLayout
     auto add = [&p] (auto* x) { p.emplace_back (x); };
 
     // buffer
-    add (new APC (pid ("mode"), "Buffer Mode", bufferModeNames(), isInstrument ? ModeFile : ModeCapture));
+    add (new APC (pid ("playMode"), "Play Mode", playModeNames(), PlayAudio));
+    add (new APC (pid ("mode"), "Buffer Mode", bufferModeNames(), ModeCapture));
     add (new APF (pid ("window"), "Window", skewed (0.1f, 10.0f, 2.0f, 0.01f), 4.0f));
     add (new APC (pid ("scanMode"), "Scan Mode", scanModeNames(), ScanStatic));
     add (new APF (pid ("scanSpeed"), "Scan Speed", skewed (0.0f, 4.0f, 1.0f, 0.001f), 1.0f));
@@ -105,7 +106,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout FacetProcessor::createLayout
         add (new APF (pid (id + "pitch"), n + "Pitch", NR (-24.0f, 24.0f, 0.01f), 0.0f));
         add (new APF (pid (id + "level"), n + "Level", skewed (-48.0f, 6.0f, -12.0f, 0.1f), 0.0f));
         add (new APF (pid (id + "pan"), n + "Pan", NR (-1.0f, 1.0f, 0.001f), 0.0f));
-        add (new APC (pid (id + "out"), n + "Output", headOutputNames(), 0));
+        add (new APC (pid (id + "out"), n + "Stem", headOutputNames(), h - 1));
+        static const float defAz[] = { -45.0f, 45.0f, -135.0f, 135.0f };
+        add (new APF (pid (id + "az"), n + "Direction", NR (-180.0f, 180.0f, 0.1f), defAz[h - 1]));
+        add (new APF (pid (id + "el"), n + "Height", NR (-90.0f, 90.0f, 0.1f), 0.0f));
         // own grain settings (used when Link is off)
         add (new APB (pid (id + "link"), n + "Link", true));
         add (new APF (pid (id + "size"), n + "Size", skewed (5.0f, 2000.0f, 150.0f, 0.1f), 120.0f));
@@ -120,17 +124,29 @@ juce::AudioProcessorValueTreeState::ParameterLayout FacetProcessor::createLayout
         add (new API (pid (id + "seed"), n + "Seed", 1, 999, h));
     }
 
+    // space (same output formats as Sediments)
+    add (new APC (pid ("output"), "Output", outputNames(), 0));
+    add (new APC (pid ("placeBy"), "Place By", placeByNames(), PlaceCentre));
+    add (new APC (pid ("height"), "Height", heightNames(), HeightFlat));
+    add (new APF (pid ("width"), "Width", NR (0.0f, 1.0f, 0.001f), 1.0f));
+    add (new APF (pid ("scatter"), "Scatter", NR (0.0f, 1.0f, 0.001f), 0.0f));
+    {
+        NR rr (-360.0f, 360.0f, 0.1f);
+        rr.setSkewForCentre (0.0f); rr.symmetricSkew = true; rr.skew = 0.5f;
+        add (new APF (pid ("rotate"), "Rotation Speed", rr, 0.0f));
+    }
+    add (new APB (pid ("frontCentre"), "Speaker 1 In Front", false));
+    add (new APB (pid ("useCentre"), "Use Centre Speaker", true));
+    add (new APB (pid ("lfe"), "Feed The LFE", false));
+
     return { p.begin(), p.end() };
 }
 
 //==============================================================================
 FacetProcessor::FacetProcessor()
     : AudioProcessor (BusesProperties()
-                          .withInput  ("Input",    juce::AudioChannelSet::stereo(), true)
-                          .withOutput ("Main 1-2", juce::AudioChannelSet::stereo(), true)
-                          .withOutput ("Out 3-4",  juce::AudioChannelSet::stereo(), true)
-                          .withOutput ("Out 5-6",  juce::AudioChannelSet::stereo(), true)
-                          .withOutput ("Out 7-8",  juce::AudioChannelSet::stereo(), true)),
+                          .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
+                          .withOutput ("Output", juce::AudioChannelSet::discreteChannels (kMaxOut), true)),
       apvts (*this, nullptr, "FACET", createLayout())
 {
     formatManager.registerBasicFormats();
@@ -140,21 +156,16 @@ FacetProcessor::FacetProcessor()
 
 bool FacetProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
+    // any output width from 1 to 16 channels; the format uses what the track has
     const auto out = layouts.getMainOutputChannelSet();
-    if (out != juce::AudioChannelSet::stereo() && out != juce::AudioChannelSet::mono()) return false;
-    for (int b = 1; b < layouts.outputBuses.size(); ++b)
-    {
-        const auto aux = layouts.getChannelSet (false, b);
-        if (! aux.isDisabled() && aux != juce::AudioChannelSet::stereo() && aux != juce::AudioChannelSet::mono()) return false;
-    }
+    if (out.isDisabled() || out.size() > kMaxOut) return false;
     const auto in = layouts.getMainInputChannelSet();
-    if (isInstrument && in.isDisabled()) return true;
-    return in == juce::AudioChannelSet::stereo() || in == juce::AudioChannelSet::mono();
+    return in.isDisabled() || in == juce::AudioChannelSet::stereo() || in == juce::AudioChannelSet::mono();
 }
 
 void FacetProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    engine.prepare (sampleRate, samplesPerBlock, isInstrument);
+    engine.prepare (sampleRate, samplesPerBlock);
 }
 
 //==============================================================================
@@ -163,6 +174,10 @@ void FacetProcessor::readParams (Params& p) const
     auto f = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
     auto i = [&f]   (const char* id) { return (int) std::lround (f (id)); };
 
+    p.playMode   = i ("playMode");
+    p.output     = i ("output");    p.placeBy = i ("placeBy");     p.height = i ("height");
+    p.width      = f ("width");     p.scatter = f ("scatter");     p.rotateSpeed = f ("rotate");
+    p.frontCentre = f ("frontCentre") > 0.5f; p.useCentre = f ("useCentre") > 0.5f; p.lfe = f ("lfe") > 0.5f;
     p.bufferMode = i ("mode");      p.windowSec = f ("window");
     p.scanMode   = i ("scanMode");  p.scanSpeed = f ("scanSpeed");  p.feedback = f ("feedback");
     p.position   = f ("position");  p.sizeMs = f ("size");          p.density = f ("density");
@@ -188,6 +203,8 @@ void FacetProcessor::readParams (Params& p) const
         hp.levelDb = apvts.getRawParameterValue (id + "level")->load();
         hp.pan     = apvts.getRawParameterValue (id + "pan")->load();
         hp.bus     = (int) std::lround (apvts.getRawParameterValue (id + "out")->load());
+        hp.az      = apvts.getRawParameterValue (id + "az")->load();
+        hp.el      = apvts.getRawParameterValue (id + "el")->load();
         auto v = [this, &id] (const char* name) { return apvts.getRawParameterValue (id + name)->load(); };
         hp.link       = v ("link") > 0.5f;
         hp.sizeMs     = v ("size");
@@ -254,15 +271,7 @@ void FacetProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiB
 
     const int numIn = getMainBusNumInputChannels();
     auto mainBus = getBusBuffer (buffer, false, 0);
-    Engine::AuxOutputs aux {};
-    for (int b = 1; b < kNumBuses && b < getBusCount (false); ++b)
-    {
-        auto* bus = getBus (false, b);
-        if (bus == nullptr || ! bus->isEnabled() || bus->getNumberOfChannels() == 0) continue;
-        auto bb = getBusBuffer (buffer, false, b);
-        aux[(size_t) b - 1] = { bb.getWritePointer (0), bb.getNumChannels() > 1 ? bb.getWritePointer (1) : bb.getWritePointer (0) };
-    }
-    engine.process (mainBus, numIn, aux, midi, tr, params);
+    engine.process (mainBus, numIn, midi, tr, params);
 }
 
 //==============================================================================

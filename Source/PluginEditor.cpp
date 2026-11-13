@@ -787,6 +787,192 @@ void GrainPad::paint (juce::Graphics& g)
 }
 
 //==============================================================================
+// RoomView
+//==============================================================================
+RoomView::RoomView (FacetProcessor& p) : proc (p)
+{
+    setTitle ("Room");
+    setDescription ("Seen from above, you in the middle, front at the top. Grains appear where they are heard: "
+                    "filled above ear level, hollow below. With Place by Each head, drag the numbered handles.");
+    setAccessible (true);
+    startTimerHz (30);
+}
+
+juce::Rectangle<float> RoomView::circleArea() const
+{
+    auto r = getLocalBounds().toFloat().reduced (14.0f).withTrimmedTop (26.0f).withTrimmedBottom (18.0f);
+    const float d = juce::jmin (r.getWidth() - 150.0f, r.getHeight());
+    return juce::Rectangle<float> (d, d).withCentre ({ r.getX() + 150.0f + (r.getWidth() - 150.0f) * 0.5f, r.getCentreY() });
+}
+
+juce::Point<float> RoomView::pointFor (float az, float el) const
+{
+    const auto c = circleArea();
+    const float rad = c.getWidth() * 0.5f * std::cos (juce::degreesToRadians (el));
+    const float a = juce::degreesToRadians (az);
+    return { c.getCentreX() + std::sin (a) * rad, c.getCentreY() - std::cos (a) * rad };
+}
+
+int RoomView::headAt (juce::Point<float> pt) const
+{
+    if ((int) proc.apvts.getRawParameterValue ("placeBy")->load() != facet::PlaceEachHead) return -1;
+    for (int h = 0; h < facet::kNumHeads; ++h)
+    {
+        const juce::String id = "h" + juce::String (h + 1) + "_";
+        if (proc.apvts.getRawParameterValue (id + "on")->load() < 0.5f) continue;
+        const auto hp = pointFor (proc.apvts.getRawParameterValue (id + "az")->load(), 0.0f);
+        if (hp.getDistanceFrom (pt) < 14.0f) return h;
+    }
+    return -1;
+}
+
+void RoomView::setHeadAz (int h, juce::Point<float> pt)
+{
+    const auto c = circleArea().getCentre();
+    const float az = juce::radiansToDegrees (std::atan2 (pt.x - c.x, c.y - pt.y));
+    if (auto* prm = proc.apvts.getParameter ("h" + juce::String (h + 1) + "_az"))
+        prm->setValueNotifyingHost (prm->convertTo0to1 (az));
+}
+
+void RoomView::mouseDown (const juce::MouseEvent& e)
+{
+    dragHead = headAt (e.position);
+    if (dragHead >= 0)
+        if (auto* prm = proc.apvts.getParameter ("h" + juce::String (dragHead + 1) + "_az")) prm->beginChangeGesture();
+}
+void RoomView::mouseDrag (const juce::MouseEvent& e) { if (dragHead >= 0) setHeadAz (dragHead, e.position); }
+void RoomView::mouseUp (const juce::MouseEvent&)
+{
+    if (dragHead >= 0)
+        if (auto* prm = proc.apvts.getParameter ("h" + juce::String (dragHead + 1) + "_az")) prm->endChangeGesture();
+    dragHead = -1;
+}
+void RoomView::mouseEnter (const juce::MouseEvent&)
+{
+    if (auto* c = findParentComponentOfClass<Content>()) c->showHint ("Room", getDescription());
+}
+
+void RoomView::paint (juce::Graphics& g)
+{
+    const auto& t = themeOf (*this);
+    const auto r = getLocalBounds().toFloat().reduced (0.5f);
+    const auto path = chamfer (r, 18.0f, true, false, true, false);
+    g.setColour (t.panel);
+    g.fillPath (path);
+    g.setColour (t.line);
+    g.strokePath (path, juce::PathStrokeType (1.0f));
+
+    const int choice = (int) proc.apvts.getRawParameterValue ("output")->load();
+    const bool stems = choice >= facet::kStemsChoice;
+    const int channels = facet::outputChannels (choice);
+
+    // header + plain-language setup note
+    g.setColour (t.text);
+    g.setFont (displayFont (*this, 16.0f));
+    g.drawText ("ROOM", r.reduced (14.0f, 6.0f).removeFromTop (20.0f), juce::Justification::centredLeft);
+    auto info = r.reduced (14.0f, 0.0f).withTrimmedTop (34.0f).removeFromLeft (140.0f);
+    g.setColour (t.value);
+    g.setFont (displayFont (*this, 15.0f));
+    g.drawFittedText (facet::outputNames()[choice].toUpperCase(), info.removeFromTop (36.0f).toNearestInt(), juce::Justification::topLeft, 2);
+    g.setColour (t.text);
+    g.setFont (bodyFont (*this, 13.0f));
+    juce::String howTo = channels <= 2 ? juce::String ("Stereo track: nothing to set up.")
+                                       : "Set the track to " + juce::String (channels) + " channels (Reaper: Route > Track channels).";
+    if (choice >= 9 && choice < Spatial::firstSurroundChoice) howTo << " AmbiX: ACN / SN3D. Decode with your usual decoder.";
+    if (stems) howTo << " Each head on its own pair: 1-2, 3-4, 5-6, 7-8.";
+    g.drawFittedText (howTo, info.removeFromTop (110.0f).toNearestInt(), juce::Justification::topLeft, 7, 1.0f);
+
+    const auto c = circleArea();
+    const auto ctr = c.getCentre();
+
+    if (stems)
+    {
+        g.setColour (t.dim);
+        g.setFont (bodyFont (*this, 14.0f));
+        g.drawFittedText ("Head stems: no placement in space.\nEach head plays on its own stereo pair (Stem in the HEADS tab).",
+                          c.toNearestInt(), juce::Justification::centred, 4);
+        return;
+    }
+
+    // rings: ear level (outer), 30 and 60 degrees up or down (inner)
+    for (int k = 0; k < 3; ++k)
+    {
+        const float rr = c.getWidth() * 0.5f * std::cos (juce::degreesToRadians (30.0f * (float) k));
+        g.setColour (k == 0 ? t.line.brighter (0.2f) : t.line);
+        g.drawEllipse (juce::Rectangle<float> (rr * 2.0f, rr * 2.0f).withCentre (ctr), k == 0 ? 1.5f : 0.8f);
+    }
+    g.setColour (t.dim);
+    g.setFont (bodyFont (*this, 11.0f, true));
+    g.drawText ("FRONT", juce::Rectangle<float> (60.0f, 14.0f).withCentre ({ ctr.x, c.getY() - 24.0f }), juce::Justification::centred);
+
+    // listener
+    juce::Path you;
+    you.addTriangle (ctr.x, ctr.y - 7.0f, ctr.x + 6.0f, ctr.y + 5.0f, ctr.x - 6.0f, ctr.y + 5.0f);
+    g.setColour (t.text);
+    g.fillPath (you);
+
+    // speakers
+    const bool front = proc.apvts.getRawParameterValue ("frontCentre")->load() > 0.5f;
+    const bool centre = proc.apvts.getRawParameterValue ("useCentre")->load() > 0.5f;
+    const auto fmt = Spatial::formatFor (choice, front, centre, false);
+    auto speaker = [&] (float az, float el, const juce::String& name)
+    {
+        const auto pt = pointFor (az, el);
+        g.setColour (t.panel2);
+        g.fillRect (juce::Rectangle<float> (16.0f, 12.0f).withCentre (pt));
+        g.setColour (t.dim);
+        g.drawRect (juce::Rectangle<float> (16.0f, 12.0f).withCentre (pt), 1.0f);
+        g.setFont (bodyFont (*this, 9.5f, true));
+        g.drawText (name, juce::Rectangle<float> (40.0f, 12.0f).withCentre (pt.translated (0.0f, el > 0.0f ? 12.0f : -13.0f)),
+                    juce::Justification::centred);
+    };
+    if (fmt.kind == Spatial::Kind::stereo) { speaker (-30.0f, 0.0f, "L"); speaker (30.0f, 0.0f, "R"); }
+    else if (fmt.kind == Spatial::Kind::ring)
+        for (int k = 0; k < fmt.channels; ++k) speaker (fmt.speakerAngle (k), 0.0f, juce::String (k + 1));
+    else if (fmt.kind == Spatial::Kind::surround && fmt.layout != nullptr)
+    {
+        for (auto& sp : fmt.layout->speakers)
+            if (! sp.lfe) speaker (sp.az, sp.el, sp.name);
+    }
+    else
+    {
+        g.setColour (t.dim);
+        g.setFont (bodyFont (*this, 11.0f));
+        g.drawText ("whole sphere", juce::Rectangle<float> (100.0f, 14.0f).withCentre ({ ctr.x, c.getBottom() + 9.0f }), juce::Justification::centred);
+    }
+
+    // grains: filled above ear level, hollow below, size grows with height
+    for (size_t gi = 0; gi < proc.engine.grainView.size(); ++gi)
+    {
+        if (proc.engine.grainView[gi].load() < 0.0f) continue;
+        const float az = proc.engine.grainAz[gi].load(), el = proc.engine.grainEl[gi].load();
+        const auto pt = pointFor (az, el);
+        const float sz = 5.0f + 3.0f * std::abs (el) / 90.0f;
+        g.setColour (t.value);
+        if (el >= -1.0f) g.fillEllipse (juce::Rectangle<float> (sz, sz).withCentre (pt));
+        else             g.drawEllipse (juce::Rectangle<float> (sz, sz).withCentre (pt), 1.5f);
+    }
+
+    // head handles (Each head)
+    if ((int) proc.apvts.getRawParameterValue ("placeBy")->load() == facet::PlaceEachHead)
+        for (int h = 0; h < facet::kNumHeads; ++h)
+        {
+            const juce::String id = "h" + juce::String (h + 1) + "_";
+            if (proc.apvts.getRawParameterValue (id + "on")->load() < 0.5f) continue;
+            const auto pt = pointFor (proc.apvts.getRawParameterValue (id + "az")->load(), 0.0f);
+            juce::Path d;
+            d.addQuadrilateral (pt.x, pt.y - 11.0f, pt.x + 11.0f, pt.y, pt.x, pt.y + 11.0f, pt.x - 11.0f, pt.y);
+            g.setColour (t.panel2);
+            g.fillPath (d);
+            g.setColour (t.mod);
+            g.strokePath (d, juce::PathStrokeType (2.0f));
+            g.setColour (t.text);
+            g.setFont (displayFont (*this, 13.0f));
+            g.drawText (juce::String (h + 1), juce::Rectangle<float> (16.0f, 16.0f).withCentre (pt), juce::Justification::centred);
+        }
+}
+
+//==============================================================================
 // Panels
 //==============================================================================
 void Panel::paint (juce::Graphics& g)
@@ -977,15 +1163,16 @@ void HelpPanel::paint (juce::Graphics& g)
 //==============================================================================
 Content::Content (FacetProcessor& p, Settings& s)
     : proc (p), settings (s), bufferView (p), pad (p), modeChoice (p, "mode", "Buffer"),
+      playChoice (p, "playMode", "Mode", "Play mode"), room (p),
       displayPanel (s), helpPanel (s)
 {
     setWantsKeyboardFocus (true);
     setFocusContainerType (FocusContainerType::keyboardFocusContainer);
-    setTitle (FacetProcessor::isInstrument ? "Facet granular instrument" : "Facet granular buffer");
+    setTitle ("Facet granular buffer");
 
     addAndMakeVisible (main);
     main.setFocusContainerType (FocusContainerType::focusContainer);
-    for (auto* c : std::initializer_list<juce::Component*> { &modeChoice, &freezeBtn, &loadBtn, &helpBtn, &displayBtn, &bufferView, &pad })
+    for (auto* c : std::initializer_list<juce::Component*> { &playChoice, &modeChoice, &freezeBtn, &loadBtn, &helpBtn, &displayBtn, &bufferView, &pad })
         main.addAndMakeVisible (c);
 
     loadBtn.setTitle ("Load audio");
@@ -1116,18 +1303,38 @@ Content::Content (FacetProcessor& p, Settings& s)
         headDetail[(size_t) h] = std::move (d);
     }
 
+    // 09 SPACE: output format and where grains are heard (same formats as Sediments)
+    space.add<Choice> (p, "output", "Output");
+    space.add<Choice> (p, "placeBy", "Place by");
+    space.add<Choice> (p, "height", "Height");
+    space.add<Knob>   (p, "width", "Width");
+    space.add<Knob>   (p, "scatter", "Scatter");
+    space.add<Knob>   (p, "rotate", "Rotation");
+    space.add<Toggle> (p, "frontCentre", "Speaker 1 front");
+    space.add<Toggle> (p, "useCentre", "Centre spk");
+    for (int h = 1; h <= facet::kNumHeads; ++h)
+        space.add<Knob> (p, "h" + juce::String (h) + "_az", "H" + juce::String (h) + " dir", "Head " + juce::String (h) + " direction");
+    for (int h = 1; h <= facet::kNumHeads; ++h)
+        space.add<Knob> (p, "h" + juce::String (h) + "_el", "H" + juce::String (h) + " height", "Head " + juce::String (h) + " height");
+    space.add<Toggle> (p, "lfe", "Feed LFE");
+    main.addChildComponent (space);
+    main.addChildComponent (room);
+
     tabMods.setTitle ("Show modulation and dynamics");
     tabHeads.setTitle ("Show read heads");
     tabHeads.setDescription ("Up to 4 read heads, each reading its own spot, with its own settings and output.");
-    for (auto* b : { &tabMods, &tabHeads })
+    tabSpace.setTitle ("Show space");
+    tabSpace.setDescription ("Output format (stereo to 16 channels, surround, Ambisonics, head stems) and where the grains are heard.");
+    for (auto* b : { &tabMods, &tabHeads, &tabSpace })
     {
         b->setRadioGroupId (4242);
         b->setClickingTogglesState (true);
         main.addAndMakeVisible (b);
     }
     tabMods.setToggleState (true, juce::dontSendNotification);
-    tabMods.onClick  = [this] { showHeads (false); };
-    tabHeads.onClick = [this] { showHeads (true); };
+    tabMods.onClick  = [this] { showTab (0); };
+    tabHeads.onClick = [this] { showTab (1); };
+    tabSpace.onClick = [this] { showTab (2); };
 
     linkAllBtn.setTitle ("Link all heads");
     linkAllBtn.setDescription ("All heads follow the main Grain and Scan settings.");
@@ -1137,12 +1344,12 @@ Content::Content (FacetProcessor& p, Settings& s)
     unlinkAllBtn.onClick = [this] { proc.setAllLinks (false); announce ("All heads unlinked"); };
     main.addChildComponent (linkAllBtn);
     main.addChildComponent (unlinkAllBtn);
-    for (auto* b : { &tabMods, &tabHeads, &linkAllBtn, &unlinkAllBtn })
+    for (auto* b : { &tabMods, &tabHeads, &tabSpace, &linkAllBtn, &unlinkAllBtn })
         b->onStateChange = [this, b] { if (b->isMouseOver()) showHint (b->getTitle(), b->getDescription()); };
 
     for (auto* s2 : { &grain, &buffer, &shiftS, &mods, &dyn }) main.addAndMakeVisible (s2);
     main.addChildComponent (heads);
-    if (FacetProcessor::isInstrument) main.addAndMakeVisible (inst);
+    main.addChildComponent (inst);
     selectHead (0);
 
     addChildComponent (displayPanel);
@@ -1205,20 +1412,25 @@ void Content::closePanels()
     if (wasOpen) pad.grabKeyboardFocus();
 }
 
-void Content::showHeads (bool show)
+void Content::showTab (int t)
 {
-    headsView = show;
-    tabHeads.setToggleState (show, juce::dontSendNotification);
-    tabMods.setToggleState (! show, juce::dontSendNotification);
-    mods.setVisible (! show);
-    dyn.setVisible (! show);
-    inst.setVisible (! show && FacetProcessor::isInstrument);
-    heads.setVisible (show);
-    linkAllBtn.setVisible (show);
-    unlinkAllBtn.setVisible (show);
+    tab = t;
+    headsView = t == 1;
+    const bool notes = (int) proc.apvts.getRawParameterValue ("playMode")->load() != facet::PlayAudio;
+    tabMods.setToggleState (t == 0, juce::dontSendNotification);
+    tabHeads.setToggleState (t == 1, juce::dontSendNotification);
+    tabSpace.setToggleState (t == 2, juce::dontSendNotification);
+    mods.setVisible (t == 0);
+    dyn.setVisible (t == 0);
+    inst.setVisible (t == 0 && notes);
+    heads.setVisible (t == 1);
+    linkAllBtn.setVisible (t == 1);
+    unlinkAllBtn.setVisible (t == 1);
     for (int h = 0; h < facet::kNumHeads; ++h)
-        headDetail[(size_t) h]->setVisible (show && h == selectedHead);
-    announce (show ? "Heads" : "Modulation and dynamics");
+        headDetail[(size_t) h]->setVisible (t == 1 && h == selectedHead);
+    space.setVisible (t == 2);
+    room.setVisible (t == 2);
+    announce (t == 0 ? "Modulation and dynamics" : t == 1 ? "Heads" : "Space");
 }
 
 void Content::selectHead (int h)
@@ -1251,8 +1463,11 @@ juce::String Content::statusText() const
     if (mode == facet::ModeFile) s << (e.hasFile() ? "PLAYING FILE" : "NO FILE LOADED");
     else if (mode == facet::ModeFreeze) s << "FROZEN";
     else s << "CAPTURING";
-    s << "\n" << (sync ? "SYNCED TO TEMPO" : "FREE RATE");
-    s << "  //  " << (e.viewHostPlaying.load() ? "LOCKED TO SONG POSITION" : "TRANSPORT STOPPED");
+    const int pm = (int) proc.apvts.getRawParameterValue ("playMode")->load();
+    s << (pm == facet::PlayMidi ? "  //  MIDI NOTES" : pm == facet::PlayBoth ? "  //  AUDIO + NOTES" : "");
+    const int oc = (int) proc.apvts.getRawParameterValue ("output")->load();
+    s << "\n" << facet::outputNames()[oc].toUpperCase() << "  //  " << (sync ? "SYNCED" : "FREE RATE");
+    s << "\n" << (e.viewHostPlaying.load() ? "LOCKED TO SONG POSITION" : "TRANSPORT STOPPED");
     return s;
 }
 
@@ -1278,6 +1493,15 @@ void Content::timerCallback()
         for (auto* c : d.getChildren()) c->setEnabled (! linked || dynamic_cast<Action*> (c) != nullptr);
     }
     tabHeads.setButtonText ("HEADS  " + juce::String (onCount) + "/4 ON");
+    const int playMode = (int) proc.apvts.getRawParameterValue ("playMode")->load();
+    inst.setVisible (tab == 0 && playMode != facet::PlayAudio);
+    if (lastPlayMode >= 0 && playMode != lastPlayMode)
+        announce (playMode == facet::PlayAudio ? "Audio mode: grains play continuously"
+                : playMode == facet::PlayMidi ? "MIDI mode: notes play the grains"
+                                              : "Both: continuous grains plus notes");
+    lastPlayMode = playMode;
+    const int outCh = facet::outputChannels ((int) proc.apvts.getRawParameterValue ("output")->load());
+    tabSpace.setButtonText ("SPACE  " + juce::String (outCh) + " CH");
 
     const auto st = statusText();
     if (st != lastStatus) { lastStatus = st; repaint (0, 0, getWidth(), 90); }
@@ -1319,14 +1543,15 @@ void Content::paint (juce::Graphics& g)
     g.drawText ("FACET", juce::Rectangle<float> (header.getX() + 58.0f, header.getY() + 2.0f, 190.0f, 44.0f), juce::Justification::centredLeft);
     g.setColour (t.value);
     g.setFont (settings.display (13.0f));
-    g.drawText (FacetProcessor::isInstrument ? "LPF // GRANULAR INSTRUMENT" : "LPF // GRANULAR BUFFER",
+    g.drawText ("LPF // GRANULAR BUFFER",
                 juce::Rectangle<float> (header.getX() + 60.0f, header.getY() + 42.0f, 220.0f, 16.0f), juce::Justification::centredLeft);
 
     // plain-language status
     g.setColour (t.dim);
     g.setFont (settings.display (14.0f));
-    g.drawFittedText (lastStatus, juce::Rectangle<int> ((int) header.getX() + 262, (int) header.getY() + 8, 300, 50),
-                      juce::Justification::centredLeft, 3, 0.9f);
+    g.setFont (settings.display (13.0f));
+    g.drawFittedText (lastStatus, juce::Rectangle<int> ((int) header.getX() + 262, (int) header.getY() + 6, 205, 54),
+                      juce::Justification::centredLeft, 3, 0.85f);
 
     // hint bar
     if (settings.hints)
@@ -1370,15 +1595,17 @@ void Content::resized()
 
     auto r = getLocalBounds().reduced (12);
     auto header = r.removeFromTop (66).reduced (14, 6);
-    displayBtn.setBounds (header.removeFromRight (108).withSizeKeepingCentre (108, 38));
+    displayBtn.setBounds (header.removeFromRight (100).withSizeKeepingCentre (100, 38));
     header.removeFromRight (8);
-    helpBtn.setBounds (header.removeFromRight (80).withSizeKeepingCentre (80, 38));
+    helpBtn.setBounds (header.removeFromRight (70).withSizeKeepingCentre (70, 38));
     header.removeFromRight (8);
-    loadBtn.setBounds (header.removeFromRight (130).withSizeKeepingCentre (130, 38));
+    loadBtn.setBounds (header.removeFromRight (120).withSizeKeepingCentre (120, 38));
     header.removeFromRight (8);
-    freezeBtn.setBounds (header.removeFromRight (112).withSizeKeepingCentre (112, 38));
+    freezeBtn.setBounds (header.removeFromRight (104).withSizeKeepingCentre (104, 38));
     header.removeFromRight (8);
-    modeChoice.setBounds (header.removeFromRight (150).withTrimmedTop (-6).withTrimmedBottom (-6));
+    modeChoice.setBounds (header.removeFromRight (140).withTrimmedTop (-6).withTrimmedBottom (-6));
+    header.removeFromRight (8);
+    playChoice.setBounds (header.removeFromRight (120).withTrimmedTop (-6).withTrimmedBottom (-6));
 
     r.removeFromTop (10);
     r.removeFromBottom (38 + 8);   // hint bar
@@ -1400,6 +1627,8 @@ void Content::resized()
     tabMods.setBounds (tabs.removeFromLeft (230));
     tabs.removeFromLeft (6);
     tabHeads.setBounds (tabs.removeFromLeft (170));
+    tabs.removeFromLeft (6);
+    tabSpace.setBounds (tabs.removeFromLeft (150));
     unlinkAllBtn.setBounds (tabs.removeFromRight (130));
     tabs.removeFromRight (6);
     linkAllBtn.setBounds (tabs.removeFromRight (110));
@@ -1411,15 +1640,18 @@ void Content::resized()
         for (auto& d : headDetail)
             d->setBounds (rowH.withWidth (d->preferredWidth()).withHeight (d->preferredHeight()));
     }
+    {
+        auto rowS = r;
+        space.setBounds (rowS.removeFromRight (space.preferredWidth()).withHeight (space.preferredHeight()));
+        rowS.removeFromRight (10);
+        room.setBounds (rowS.withHeight (space.preferredHeight()));
+    }
     auto rowB = r;
     mods.setBounds (rowB.removeFromLeft (mods.preferredWidth()).withHeight (mods.preferredHeight()));
     rowB.removeFromLeft (10);
     dyn.setBounds (rowB.removeFromLeft (dyn.preferredWidth()).withHeight (dyn.preferredHeight()));
-    if (FacetProcessor::isInstrument)
-    {
-        rowB.removeFromLeft (10);
-        inst.setBounds (rowB.removeFromLeft (inst.preferredWidth()).withHeight (inst.preferredHeight()));
-    }
+    rowB.removeFromLeft (10);
+    inst.setBounds (rowB.removeFromLeft (inst.preferredWidth()).withHeight (inst.preferredHeight()));
 }
 
 //==============================================================================

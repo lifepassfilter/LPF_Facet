@@ -199,6 +199,29 @@ private:
 };
 
 //==============================================================================
+// SPACE tab: the room seen from above, the listener in the middle, front at the top.
+// Grains appear where they are heard (filled above ear level, hollow below).
+// With "Place by: Each head", the numbered head handles can be dragged around.
+class RoomView : public juce::Component, private juce::Timer
+{
+public:
+    explicit RoomView (FacetProcessor&);
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseEnter (const juce::MouseEvent&) override;
+private:
+    void timerCallback() override { repaint(); }
+    juce::Rectangle<float> circleArea() const;
+    juce::Point<float> pointFor (float az, float el) const;
+    int headAt (juce::Point<float>) const;
+    void setHeadAz (int head, juce::Point<float>);
+    FacetProcessor& proc;
+    int dragHead = -1;
+};
+
+//==============================================================================
 // Modal panels: Display & accessibility, Help / quick start
 class Panel : public juce::Component
 {
@@ -269,7 +292,7 @@ private:
     void timerCallback() override;
     void displaySettingsChanged() override;
     juce::String statusText() const;
-    void showHeads (bool);
+    void showTab (int);      // 0 modulation & dynamics, 1 heads, 2 space
     void selectHead (int);
 
     FacetProcessor& proc;
@@ -278,7 +301,8 @@ private:
     juce::Component main;
     BufferView bufferView;
     GrainPad pad;
-    Choice modeChoice;
+    Choice modeChoice, playChoice;
+    RoomView room;
     juce::TextButton loadBtn { "LOAD AUDIO" }, freezeBtn { "FREEZE" }, helpBtn { "HELP" }, displayBtn { "DISPLAY" };
     std::unique_ptr<juce::FileChooser> chooser;
 
@@ -287,20 +311,22 @@ private:
     Section shiftS { "03", "SHIFT / SLICE", 4, 80, 98 };
     Section mods   { "04", "MODULATION", 7, 78, 70 };
     Section dyn    { "05", "DYNAMICS / OUT", 4, 80, 98 };
-    Section inst   { "06", "INSTRUMENT", 3, 80, 98 };
+    Section inst   { "06", "NOTES", 3, 76, 98 };
     Section heads  { "07", "HEADS", 8, 98, 52 };
+    Section space  { "09", "SPACE", 8, 80, 70 };
     std::array<std::unique_ptr<Section>, facet::kNumHeads> headDetail;
     std::array<Action*, facet::kNumHeads> editButtons {};
-    juce::TextButton tabMods { "MODULATION & DYNAMICS" }, tabHeads { "HEADS" },
+    juce::TextButton tabMods { "MODULATION & DYNAMICS" }, tabHeads { "HEADS" }, tabSpace { "SPACE" },
                      linkAllBtn { "LINK ALL" }, unlinkAllBtn { "UNLINK ALL" };
     bool headsView = false;
+    int tab = 0;
     int selectedHead = 0;
 
     DisplayPanel displayPanel;
     HelpPanel helpPanel;
 
     juce::String hintTitle, hintText, lastStatus;
-    int lastMode = -1;
+    int lastMode = -1, lastPlayMode = -1;
 };
 } // namespace facetui
 

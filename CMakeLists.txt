@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(LPF_Facet VERSION 0.3.1)
+project(LPF_Facet VERSION 0.4.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,7 +19,8 @@ endif()
 
 set(FACET_SOURCES
     Source/PluginProcessor.cpp
-    Source/PluginEditor.cpp)
+    Source/PluginEditor.cpp
+    Source/Spatial.cpp)
 
 # Formats: add AAX here if you have the AAX SDK (juce_set_aax_sdk_path).
 set(FACET_FORMATS VST3 Standalone)
@@ -34,7 +35,7 @@ juce_add_binary_data(FacetAssets SOURCES
     fonts/OpenDyslexic-Bold.otf
     fonts/Rajdhani-Bold.ttf)
 
-function(facet_target target product isSynth code bundle)
+function(facet_target target product code bundle)
     juce_add_plugin(${target}
         COMPANY_NAME "Life Pass Filter"
         COMPANY_WEBSITE "https://lifepassfilter.com"
@@ -43,7 +44,7 @@ function(facet_target target product isSynth code bundle)
         PLUGIN_CODE ${code}
         PRODUCT_NAME "${product}"
         FORMATS ${FACET_FORMATS}
-        IS_SYNTH ${isSynth}
+        IS_SYNTH FALSE
         NEEDS_MIDI_INPUT TRUE
         NEEDS_MIDI_OUTPUT FALSE
         IS_MIDI_EFFECT FALSE
@@ -54,7 +55,6 @@ function(facet_target target product isSynth code bundle)
     target_sources(${target} PRIVATE ${FACET_SOURCES})
     target_include_directories(${target} PRIVATE Source)
     target_compile_definitions(${target} PUBLIC
-        FACET_IS_SYNTH=$<IF:$<BOOL:${isSynth}>,1,0>
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
@@ -66,14 +66,14 @@ function(facet_target target product isSynth code bundle)
                juce::juce_recommended_warning_flags)
 endfunction()
 
-facet_target(LPF_Facet     "Facet"            FALSE Fct1 facet     Fx)
-facet_target(LPF_FacetInst "Facet Instrument" TRUE  Fct2 facetinst Instrument Sampler)
+# One plugin: Audio, MIDI or Both modes (an effect that also takes MIDI notes)
+facet_target(LPF_Facet "Facet" Fct1 facet Fx)
 
 # Offline render test (no GUI): renders a WAV through the engine.
 option(FACET_BUILD_TESTS "Build offline render test" OFF)
 if(FACET_BUILD_TESTS)
     juce_add_console_app(FacetRenderTest PRODUCT_NAME "FacetRenderTest")
-    target_sources(FacetRenderTest PRIVATE Tests/RenderTest.cpp)
+    target_sources(FacetRenderTest PRIVATE Tests/RenderTest.cpp Source/Spatial.cpp)
     target_include_directories(FacetRenderTest PRIVATE Source)
     target_compile_definitions(FacetRenderTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(FacetRenderTest PRIVATE juce::juce_audio_formats juce::juce_dsp

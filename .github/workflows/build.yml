@@ -48,7 +48,7 @@ jobs:
           set -e
           OUT=LPF-Facet-${{ matrix.name }}
           mkdir -p "$OUT"
-          for P in "LPF_Facet:Facet" "LPF_FacetInst:Facet Instrument"; do
+          for P in "LPF_Facet:Facet"; do
             TARGET="${P%%:*}"; NAME="${P#*:}"
             ART="build/${TARGET}_artefacts/Release"
             cp -R "$ART/VST3/$NAME.vst3" "$OUT/"
@@ -93,7 +93,8 @@ jobs:
           target_commitish: ${{ github.sha }}
           make_latest: true
           body: |
-            Facet (effect) and Facet Instrument by Life Pass Filter. In your host they appear as "Facet (Life Pass Filter)" and "Facet Instrument (Life Pass Filter)".
+            Facet by Life Pass Filter, listed in your host as "Facet (Life Pass Filter)".
+            One plugin with Audio, MIDI and Both modes; output from stereo to 16 channels (rings, Ambisonics, 5.1 to 9.1.6, head stems).
             Windows: VST3 + Standalone. macOS (Apple Silicon + Intel): VST3, AU + Standalone.
             Unsigned binaries: see "Install" in the README (macOS quarantine, Windows unblock).
           files: dist/*.zip

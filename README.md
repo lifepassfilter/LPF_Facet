@@ -1,28 +1,36 @@
-# Facet — granular buffer effect & instrument
+# Facet — granular buffer, played by audio or MIDI, from stereo to 16 channels
 
-A JUCE plugin (VST3 / AU / Standalone; AAX if you have the SDK) built around a
-**rolling capture buffer** and a **granular engine that repeats exactly**:
-the same settings at the same song position always give the same result.
+A JUCE plugin (VST3 / AU / Standalone) built around a **rolling capture buffer** and a
+**granular engine that repeats exactly**: the same settings at the same song position always
+give the same result.
 
-Two builds come from one codebase:
-
-- **Facet** — an effect. It keeps recording its input into a rolling buffer
-  (window up to 10 s), and you play grains from that buffer.
-- **Facet Instrument** — an instrument. MIDI notes play grains from a dropped file
-  or from the captured input, pitched relative to *Root*.
-
-By **Life Pass Filter** — [lifepassfilter.com](https://lifepassfilter.com)
+By **Life Pass Filter** — [lifepassfilter.com](https://lifepassfilter.com).
+In your host it appears as **Facet (Life Pass Filter)**.
 
 ![Facet](screenshot.png)
 
-In your host the plugins appear as **Facet (Life Pass Filter)** and **Facet Instrument (Life Pass Filter)**.
+## Modes
+
+One plugin, three **Mode** settings (top of the window):
+
+- **Audio**: Facet keeps recording what goes through the track and grains play all the time.
+- **MIDI**: silent until you play; each note starts grains transposed around *Root*, with
+  *Attack* and *Release* (section 06 NOTES), up to 8 notes at once.
+- **Both**: the continuous texture, plus notes played on top.
+
+The buffer source (Capture, Freeze, File) does not depend on the mode: you can capture your guitar
+live and play it from a keyboard.
+
+Facet is an effect that also takes MIDI. In Reaper this works everywhere (audio or MIDI tracks).
+Ableton Live and Logic do not send MIDI notes to audio effects, so the MIDI and Both modes need Reaper,
+Bitwig or another host that does.
 
 ## Download
 
 Every push to `main` builds Windows and macOS on GitHub Actions and publishes a release:
 [latest release](../../releases/latest).
 
-- `LPF-Facet-Windows.zip`: `Facet.vst3`, `Facet Instrument.vst3`, standalone `.exe` files
+- `LPF-Facet-Windows.zip`: `Facet.vst3` and the standalone `Facet.exe`
 - `LPF-Facet-macOS.zip`: VST3, AU (`.component`) and standalone `.app`, universal (Apple Silicon + Intel)
 
 ## Install
@@ -43,9 +51,9 @@ The binaries are not signed.
    ```
 3. Rescan plugins in your host.
 
-**Updating from v0.3.0 or older:** the files were renamed from "LPF Facet" to "Facet".
-Delete the old `LPF Facet.vst3` / `LPF Facet Inst.vst3` (and `.component` on macOS) before installing,
-then rescan. Projects keep working: the plugin IDs did not change.
+**Updating from an older version:** delete `LPF Facet.vst3`, `LPF Facet Inst.vst3` and
+`Facet Instrument.vst3` (and their `.component` on macOS) before installing, then rescan.
+Facet Instrument no longer exists: use Facet with Mode set to MIDI.
 
 **Reaper tip:** to use the keyboard shortcuts (F, H, D, M) inside the plugin window, enable
 *Send all keyboard input to plug-in* in the FX window's `+` menu.
@@ -101,14 +109,32 @@ Up to **4 read heads** play from the same buffer at the same time (the **HEADS**
 - Modulation, Shift, Slice and dynamics apply to every head.
 - The buffer view shows the heads as numbered diamonds and their grains in one lane per head.
 
-**Multi-output.** The plugin has 4 stereo outputs: *Main 1-2*, *Out 3-4*, *Out 5-6*, *Out 7-8*.
-Choose an Output per head. The main output carries the dry/wet mix; the extra outputs carry only the
-wet heads routed to them (each with its own compressor and safety limiter). A head routed to an output
-the host has disabled plays on Main.
+**Head stems.** With *Output: Head stems (8 ch)*, each head plays on its own stereo pair
+(*Stem* in the HEADS tab: 1-2, 3-4, 5-6, 7-8). Pair 1-2 carries the dry/wet mix; the others carry
+only the heads sent to them.
 
-In Reaper: set the track to 8 channels (*Route* → *Track channels: 8*), check the plugin's output pins
-(1-8 by default), then send channels 3-4, 5-6 and 7-8 to other tracks (*Route* → *Sends* → audio
-channels 3/4, 5/6, 7/8 → 1/2).
+## Space: stereo to 16 channels
+
+The **SPACE** tab uses the same output formats, channel order and panning as Sediments:
+
+- **Output**: Stereo; rings of 4, 5, 6, 7, 8, 10, 12 or 16 speakers; Ambisonics 1st to 3rd order
+  (AmbiX: ACN / SN3D); 5.1, 7.1, 5.1.2, 5.1.4, 7.1.2, 7.1.4, 9.1.6 (SMPTE / Dolby order, with
+  *Centre speaker* and *Feed LFE* options); or Head stems (8 ch).
+- **Place by**: where each grain is heard. *Centre* (in front), *Each head* (one direction per head,
+  drag the handles in the room view), *Buffer position* (where the grain reads), *Pattern step*
+  (each step of the pattern has its own place: spatial patterns that repeat), *Pitch*.
+- **Height**: *Flat*, *Dome* (above you), *Sphere* (above and below: for games and VR, best with
+  Ambisonics), *Pitch*, *Grain size* (short grains high, long grains low).
+  Each head also has its own height offset.
+- **Width**, **Scatter** (follows the seed, so it repeats), **Rotation** (degrees per second, locked to
+  the song while it plays). Rotation, Width and Scatter are also modulation targets.
+- The room view shows the speakers and every grain where it is heard (filled above ear level,
+  hollow below).
+- The dry signal stays in front (L / R). Compressor and safety limiter are linked over all channels.
+
+In Reaper: set the track to the number of channels the format needs (*Route* → *Track channels*).
+Facet's outputs 1-16 go straight to the track channels. For Ambisonics, add your usual decoder
+(binaural or speakers) after Facet.
 
 ## Interface & accessibility
 
@@ -135,5 +161,5 @@ Fonts (SIL Open Font License, see `fonts/licenses`): Atkinson Hyperlegible, Open
 
 - Modulation is computed every 32 samples. Grain parameters are fixed at the moment each grain starts.
 - In Capture mode, grains are kept behind the write head (pitched-up grains get extra margin).
-- In the instrument, each note starts one voice per active head (up to 32 voices).
+- In MIDI and Both modes, each note starts one voice per active head (up to 32 voices).
 - Not built yet: preset browser, modulators with several targets each, per-grain filter, MPE.
