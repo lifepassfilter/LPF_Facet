@@ -56,8 +56,8 @@ jobs:
             if [ -d "$ART/Standalone/$NAME.app" ]; then cp -R "$ART/Standalone/$NAME.app" "$OUT/";
             elif [ -f "$ART/Standalone/$NAME.exe" ]; then cp "$ART/Standalone/$NAME.exe" "$OUT/"; fi
           done
-          cp README.md "$OUT/"
-          mkdir -p "$OUT/font-licenses" && cp fonts/licenses/*.txt "$OUT/font-licenses/"
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md "$OUT/"
+          cp -R licenses "$OUT/"
           if [ "$RUNNER_OS" = "Windows" ]; then 7z a "$OUT.zip" "$OUT" > /dev/null; else zip -qry "$OUT.zip" "$OUT"; fi
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

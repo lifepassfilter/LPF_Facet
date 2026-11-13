@@ -163,3 +163,9 @@ Fonts (SIL Open Font License, see `fonts/licenses`): Atkinson Hyperlegible, Open
 - In Capture mode, grains are kept behind the write head (pitched-up grains get extra margin).
 - In MIDI and Both modes, each note starts one voice per active head (up to 32 voices).
 - Not built yet: preset browser, modulators with several targets each, per-grain filter, MPE.
+
+## License
+
+© 2026 Antoine Boucherikha (Life Pass Filter). Facet is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License, version 3 (see `LICENSE`). It comes with no warranty.
+
+It is built with JUCE (used under AGPLv3) and other open-source components listed in `THIRD_PARTY_NOTICES.md`. Every release zip includes these files.
