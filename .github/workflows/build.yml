@@ -48,7 +48,7 @@ jobs:
           set -e
           OUT=LPF-Facet-${{ matrix.name }}
           mkdir -p "$OUT"
-          for P in "LPF_Facet:LPF Facet" "LPF_FacetInst:LPF Facet Inst"; do
+          for P in "LPF_Facet:Facet" "LPF_FacetInst:Facet Instrument"; do
             TARGET="${P%%:*}"; NAME="${P#*:}"
             ART="build/${TARGET}_artefacts/Release"
             cp -R "$ART/VST3/$NAME.vst3" "$OUT/"
@@ -89,11 +89,11 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.version }}
-          name: LPF Facet v${{ steps.ver.outputs.version }}
+          name: Facet v${{ steps.ver.outputs.version }}
           target_commitish: ${{ github.sha }}
           make_latest: true
           body: |
-            LPF Facet (effect) and LPF Facet Inst (instrument) by Life Pass Filter.
+            Facet (effect) and Facet Instrument by Life Pass Filter. In your host they appear as "Facet (Life Pass Filter)" and "Facet Instrument (Life Pass Filter)".
             Windows: VST3 + Standalone. macOS (Apple Silicon + Intel): VST3, AU + Standalone.
             Unsigned binaries: see "Install" in the README (macOS quarantine, Windows unblock).
           files: dist/*.zip

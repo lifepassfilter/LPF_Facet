@@ -1,4 +1,4 @@
-// LPF Facet — themes, colour palettes, fonts and the shared display settings.
+// Facet (Life Pass Filter) — themes, colour palettes, fonts and the shared display settings.
 // Display settings are per user (not per session) and shared by every open instance.
 #pragma once
 

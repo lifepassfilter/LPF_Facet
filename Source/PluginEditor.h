@@ -1,4 +1,4 @@
-// LPF Facet — editor. Original angular "anti-grav HUD" look; accessibility first:
+// Facet (Life Pass Filter) — editor. Original angular "anti-grav HUD" look; accessibility first:
 // themes, colour-blind palettes, readable fonts, UI size, keyboard control,
 // screen-reader titles/descriptions/announcements, plain-language hints.
 #pragma once

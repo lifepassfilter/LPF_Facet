@@ -1,4 +1,4 @@
-// LPF Facet — granular buffer engine with grains that repeat exactly
+// Facet (Life Pass Filter) — granular buffer engine with grains that repeat exactly
 // Original implementation. Header-only; depends only on juce_audio_basics.
 #pragma once
 

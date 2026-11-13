@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(LPF_Facet VERSION 0.3.0)
+project(LPF_Facet VERSION 0.3.1)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -66,8 +66,8 @@ function(facet_target target product isSynth code bundle)
                juce::juce_recommended_warning_flags)
 endfunction()
 
-facet_target(LPF_Facet     "LPF Facet"       FALSE Fct1 facet     Fx)
-facet_target(LPF_FacetInst "LPF Facet Inst"  TRUE  Fct2 facetinst Instrument Sampler)
+facet_target(LPF_Facet     "Facet"            FALSE Fct1 facet     Fx)
+facet_target(LPF_FacetInst "Facet Instrument" TRUE  Fct2 facetinst Instrument Sampler)
 
 # Offline render test (no GUI): renders a WAV through the engine.
 option(FACET_BUILD_TESTS "Build offline render test" OFF)

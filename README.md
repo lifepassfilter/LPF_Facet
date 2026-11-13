@@ -1,4 +1,4 @@
-# LPF Facet — granular buffer effect & instrument
+# Facet — granular buffer effect & instrument
 
 A JUCE plugin (VST3 / AU / Standalone; AAX if you have the SDK) built around a
 **rolling capture buffer** and a **granular engine that repeats exactly**:
@@ -6,21 +6,23 @@ the same settings at the same song position always give the same result.
 
 Two builds come from one codebase:
 
-- **LPF Facet** — an effect. It keeps recording its input into a rolling buffer
+- **Facet** — an effect. It keeps recording its input into a rolling buffer
   (window up to 10 s), and you play grains from that buffer.
-- **LPF Facet Inst** — an instrument. MIDI notes play grains from a dropped file
+- **Facet Instrument** — an instrument. MIDI notes play grains from a dropped file
   or from the captured input, pitched relative to *Root*.
 
 By **Life Pass Filter** — [lifepassfilter.com](https://lifepassfilter.com)
 
-![LPF Facet](screenshot.png)
+![Facet](screenshot.png)
+
+In your host the plugins appear as **Facet (Life Pass Filter)** and **Facet Instrument (Life Pass Filter)**.
 
 ## Download
 
 Every push to `main` builds Windows and macOS on GitHub Actions and publishes a release:
 [latest release](../../releases/latest).
 
-- `LPF-Facet-Windows.zip`: `LPF Facet.vst3`, `LPF Facet Inst.vst3`, standalone `.exe` files
+- `LPF-Facet-Windows.zip`: `Facet.vst3`, `Facet Instrument.vst3`, standalone `.exe` files
 - `LPF-Facet-macOS.zip`: VST3, AU (`.component`) and standalone `.app`, universal (Apple Silicon + Intel)
 
 ## Install
@@ -36,10 +38,14 @@ The binaries are not signed.
 1. Copy the `.vst3` files to `~/Library/Audio/Plug-Ins/VST3/` and the `.component` files to `~/Library/Audio/Plug-Ins/Components/`.
 2. Remove the quarantine flag on each one, for example:
    ```bash
-   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/"LPF Facet.vst3"
-   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/"LPF Facet.component"
+   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/"Facet.vst3"
+   xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/Components/"Facet.component"
    ```
 3. Rescan plugins in your host.
+
+**Updating from v0.3.0 or older:** the files were renamed from "LPF Facet" to "Facet".
+Delete the old `LPF Facet.vst3` / `LPF Facet Inst.vst3` (and `.component` on macOS) before installing,
+then rescan. Projects keep working: the plugin IDs did not change.
 
 **Reaper tip:** to use the keyboard shortcuts (F, H, D, M) inside the plugin window, enable
 *Send all keyboard input to plug-in* in the FX window's `+` menu.
